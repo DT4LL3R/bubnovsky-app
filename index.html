@@ -1,0 +1,2059 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <title>Центр Бубновского — ЛФК</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Официальная библиотека Supabase JS SDK -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <style>
+    * { -webkit-tap-highlight-color: transparent; box-sizing: border-box; }
+    body {
+      background-color: #e5e5ea;
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      margin: 0;
+      padding: 0;
+      color: #1c1c1e;
+    }
+    #app-container {
+      max-width: 430px;
+      margin: 0 auto;
+      min-height: 100vh;
+      background-color: #f7f7f9;
+      position: relative;
+      padding-bottom: 90px;
+      box-shadow: 0 0 25px rgba(0,0,0,0.08);
+      overflow-x: hidden;
+    }
+    .brand-purple { background-color: #4a156b; }
+    .brand-purple-text { color: #4a156b; }
+    .brand-purple-border { border-color: #4a156b; }
+    .card {
+      background: #ffffff;
+      border-radius: 16px;
+      border: 1px solid #e5e5ea;
+    }
+    .input-field {
+      width: 100%;
+      background: #f9f9fb;
+      border: 1px solid #e0e0e6;
+      border-radius: 12px;
+      padding: 12px 14px;
+      font-size: 16px;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    .input-field:focus {
+      border-color: #4a156b;
+      background: #ffffff;
+    }
+    .bottom-nav {
+      position: fixed;
+      bottom: 0;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 100%;
+      max-width: 430px;
+      background: rgba(255, 255, 255, 0.96);
+      backdrop-filter: blur(10px);
+      border-top: 1px solid #e5e5ea;
+      display: flex;
+      justify-content: space-around;
+      padding: 8px 4px 18px 4px;
+      z-index: 40;
+    }
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.45);
+      z-index: 50;
+      display: flex;
+      align-items: flex-end;
+      justify-content: center;
+    }
+    .modal-sheet {
+      width: 100%;
+      max-width: 430px;
+      background: #f7f7f9;
+      border-radius: 22px 22px 0 0;
+      padding: 20px 16px 32px 16px;
+      max-height: 92vh;
+      overflow-y: auto;
+      animation: slideUp 0.22s ease-out;
+    }
+    .dialog-box {
+      width: 85%;
+      max-width: 320px;
+      background: rgba(255, 255, 255, 0.98);
+      backdrop-filter: blur(12px);
+      border-radius: 18px;
+      padding: 20px 16px 16px 16px;
+      text-align: center;
+      margin: auto;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+    }
+    @keyframes slideUp {
+      from { transform: translateY(100%); }
+      to { transform: translateY(0); }
+    }
+  </style>
+</head>
+<body>
+
+<div id="app-container"></div>
+
+<script>
+// ==========================================
+// 1. ИНИЦИАЛИЗАЦИЯ ПОДКЛЮЧЕНИЯ К SUPABASE
+// ==========================================
+let SUPABASE_URL = localStorage.getItem('lfk_supabase_url') || 'https://mbipbmjlumovyymxeezr.supabase.co';
+let SUPABASE_ANON_KEY = localStorage.getItem('lfk_supabase_key') || 'sb_publishable_J6-bMxiDV6gofFS2tockHA_fQWpWkni';
+let supabase = null;
+
+if (SUPABASE_URL && SUPABASE_ANON_KEY && window.supabase) {
+  try {
+    supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  } catch (e) {
+    console.error('Ошибка инициализации Supabase:', e);
+  }
+}
+
+// Локальный кэш данных приложения
+let db = {
+  users: [],
+  exercises: [],
+  prescriptions: {},
+  history: [],
+  payments: [],
+  slots: [],
+  slotSettings: { fromHour: 8, toHour: 20, capPerHour: 4, daysCount: 7 }
+};
+
+let state = {
+  currentUser: null,
+  authStep: 'email',
+  authEmail: '',
+  authGeneratedCode: '',
+  authCodeInput: '',
+  authNameInput: '',
+  authIsNewUser: false,
+  isLoading: false,
+
+  activeTab: 'home',
+  doctorPatientsFilter: 'mine',
+
+  subScreen: null,
+  selectedPatientId: null,
+  selectedExerciseId: null,
+
+  modal: null,
+
+  tempPrescriptions: [],
+  exerciseFormDraft: { id: null, title: '', description: '', photo: '', video: '' },
+  workoutState: {
+    index: 0,
+    sets: 1,
+    reps: 10,
+    weight: '',
+    feeling: 'Норм',
+    comment: '',
+    showExample: false
+  }
+};
+
+// ==========================================
+// 2. СИНХРОНИЗАЦИЯ С ОБЛАКОМ (FETCH И REALTIME)
+// ==========================================
+async function fetchCloudData() {
+  if (!supabase) return;
+  state.isLoading = true;
+  render();
+
+  try {
+    const [profilesRes, exercisesRes, prescRes, historyRes, paymentsRes, slotsRes] = await Promise.all([
+      supabase.from('profiles').select('*'),
+      supabase.from('exercises').select('*').order('created_at', { ascending: true }),
+      supabase.from('prescriptions').select('*').order('sort_order', { ascending: true }),
+      supabase.from('workout_history').select('*').order('created_at', { ascending: false }),
+      supabase.from('payments').select('*').order('created_at', { ascending: false }),
+      supabase.from('schedule_slots').select('*').order('day_index', { ascending: true })
+    ]);
+
+    if (profilesRes.data) db.users = profilesRes.data;
+    if (exercisesRes.data) {
+      db.exercises = exercisesRes.data.map(e => ({
+        id: e.id,
+        title: e.title,
+        description: e.description,
+        photo: e.photo_url,
+        video: e.video_url
+      }));
+    }
+
+    db.prescriptions = {};
+    if (prescRes.data) {
+      prescRes.data.forEach(p => {
+        if (!db.prescriptions[p.patient_id]) db.prescriptions[p.patient_id] = [];
+        db.prescriptions[p.patient_id].push({
+          id: p.id,
+          exerciseId: p.exercise_id,
+          sets: p.sets,
+          reps: p.reps,
+          note: p.note
+        });
+      });
+    }
+
+    if (historyRes.data) {
+      db.history = historyRes.data.map(h => ({
+        id: h.id,
+        patientId: h.patient_id,
+        exerciseId: h.exercise_id,
+        exerciseTitle: h.exercise_title,
+        date: h.date_label,
+        dateLabel: h.date_label,
+        sets: h.sets,
+        reps: h.reps,
+        weight: h.weight,
+        feeling: h.feeling,
+        comment: h.comment,
+        status: h.status
+      }));
+    }
+
+    if (paymentsRes.data) {
+      db.payments = paymentsRes.data.map(p => ({
+        id: p.id,
+        patientId: p.patient_id,
+        lessons: p.lessons,
+        amount: p.amount,
+        date: p.payment_date,
+        note: p.note
+      }));
+    }
+
+    // Группировка слотов расписания по дням
+    if (slotsRes.data && slotsRes.data.length > 0) {
+      const grouped = {};
+      slotsRes.data.forEach(s => {
+        if (!grouped[s.day_index]) {
+          grouped[s.day_index] = { dayIndex: s.day_index, dayLabel: s.day_label, hours: [] };
+        }
+        grouped[s.day_index].hours.push({
+          id: s.id,
+          time: s.slot_time,
+          capacity: s.capacity,
+          bookedPatientIds: s.booked_patient_ids || []
+        });
+      });
+      db.slots = Object.values(grouped).sort((a,b) => a.dayIndex - b.dayIndex);
+    }
+
+    // Обновляем текущего пользователя, если он уже вошёл в систему
+    if (state.currentUser) {
+      const updated = db.users.find(u => u.id === state.currentUser.id);
+      if (updated) state.currentUser = updated;
+    }
+  } catch (err) {
+    console.error('Ошибка загрузки данных из облака:', err);
+  } finally {
+    state.isLoading = false;
+    render();
+  }
+}
+
+function initRealtimeSubscription() {
+  if (!supabase) return;
+  supabase
+    .channel('lfk_realtime_changes')
+    .on('postgres_changes', { event: '*', schema: 'public' }, () => {
+      fetchCloudData();
+    })
+    .subscribe();
+}
+
+function saveSupabaseConfig() {
+  const urlEl = document.getElementById('config-sb-url');
+  const keyEl = document.getElementById('config-sb-key');
+  const url = urlEl ? urlEl.value.trim() : '';
+  const key = keyEl ? keyEl.value.trim() : '';
+
+  if (!url || !key) {
+    alert('Пожалуйста, укажите URL и Anon Key проекта Supabase');
+    return;
+  }
+
+  localStorage.setItem('lfk_supabase_url', url);
+  localStorage.setItem('lfk_supabase_key', key);
+  SUPABASE_URL = url;
+  SUPABASE_ANON_KEY = key;
+  supabase = window.supabase.createClient(url, key);
+
+  state.modal = null;
+  fetchCloudData();
+  initRealtimeSubscription();
+}
+
+// ==========================================
+// 3. ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ И ИКОНКИ
+// ==========================================
+function getDoctorById(id) {
+  return db.users.find(u => u.id === id && u.role === 'doctor');
+}
+function getPatientById(id) {
+  return db.users.find(u => u.id === id && u.role === 'patient');
+}
+function getExerciseById(id) {
+  return db.exercises.find(e => e.id === id);
+}
+
+const ICONS = {
+  home: `<svg class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24"><path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/></svg>`,
+  medkit: `<svg class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24"><path d="M20 6h-4V4c0-1.1-.9-2-2-2h-4c-1.1 0-2 .9-2 2v2H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zM10 4h4v2h-4V4zm6 11h-3v3h-2v-3H8v-2h3v-3h2v3h3v2z"/></svg>`,
+  users: `<svg class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24"><path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>`,
+  calendar: `<svg class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24"><path d="M19 4h-1V2h-2v2H8V2H6v2H5c-1.11 0-1.99.9-1.99 2L3 20a2 2 0 0 0 2 2h14c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 16H5V10h14v10zm0-12H5V6h14v2z"/></svg>`,
+  gear: `<svg class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.488.488 0 0 0-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.484.484 0 0 0-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>`,
+  dumbbell: `<svg class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 10l6-6m10 10l-6 6M7 7l10 10M3 7l4-4m14 14l-4 4"/></svg>`,
+  chart: `<svg class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24"><path d="M5 9.2h3V19H5V9.2zM10.6 5h2.8v14h-2.8V5zm5.6 8H19v6h-2.8v-6z"/></svg>`,
+  user: `<svg class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>`,
+  trash: `<svg class="w-5 h-5 text-red-500" fill="currentColor" viewBox="0 0 24 24"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>`
+};
+
+// ==========================================
+// 4. ЛОГИКА АВТОРИЗАЦИИ
+// ==========================================
+function requestCode() {
+  const email = state.authEmail.trim().toLowerCase();
+  if (!email || !email.includes('@')) {
+    alert('Пожалуйста, введите корректный E-mail');
+    return;
+  }
+  const existing = db.users.find(u => u.email.toLowerCase() === email);
+  state.authIsNewUser = !existing;
+  state.authGeneratedCode = String(Math.floor(100000 + Math.random() * 900000));
+  state.authCodeInput = state.authGeneratedCode;
+  state.authNameInput = '';
+  state.authStep = 'code';
+  render();
+}
+
+async function verifyCodeAndLogin() {
+  if (state.authCodeInput.trim() !== state.authGeneratedCode) {
+    alert('Неверный код из письма');
+    return;
+  }
+  const email = state.authEmail.trim().toLowerCase();
+  let user = db.users.find(u => u.email.toLowerCase() === email);
+
+  if (!user && supabase) {
+    const name = state.authNameInput.trim() || email.split('@')[0];
+    const { data, error } = await supabase.from('profiles').insert([{
+      email,
+      role: 'patient',
+      name,
+      phone: '',
+      balance: 0
+    }]).select().single();
+
+    if (error) {
+      alert('Ошибка регистрации в базе: ' + error.message);
+      return;
+    }
+    user = data;
+    db.users.push(user);
+  } else if (user && user.role === 'doctor' && supabase) {
+    await supabase.from('profiles').update({ logged_in: true }).eq('id', user.id);
+    user.logged_in = true;
+  }
+
+  loginAsUser(user);
+}
+
+function loginAsUser(user) {
+  state.currentUser = user;
+  state.subScreen = null;
+  state.modal = null;
+  if (user.role === 'admin') state.activeTab = 'home';
+  else if (user.role === 'doctor') state.activeTab = 'patients';
+  else state.activeTab = 'home';
+  render();
+}
+
+function quickLogin(email) {
+  const user = db.users.find(u => u.email.toLowerCase() === email.toLowerCase());
+  if (user) loginAsUser(user);
+  else alert('Пользователь не найден в базе данных Supabase');
+}
+
+// ==========================================
+// 5. ДЕЙСТВИЯ АДМИНИСТРАТОРА (ВЫЗОВЫ SUPABASE)
+// ==========================================
+async function adminAddDoctor() {
+  const emailEl = document.getElementById('modal-doc-email');
+  const nameEl = document.getElementById('modal-doc-name');
+  const email = emailEl ? emailEl.value.trim().toLowerCase() : '';
+  const name = nameEl ? nameEl.value.trim() : '';
+
+  if (!email || !email.includes('@')) {
+    alert('Введите корректный E-mail врача');
+    return;
+  }
+  if (db.users.some(u => u.email.toLowerCase() === email)) {
+    alert('Пользователь с таким E-mail уже существует');
+    return;
+  }
+
+  if (supabase) {
+    const { data, error } = await supabase.from('profiles').insert([{
+      email,
+      role: 'doctor',
+      name: name || email.split('@')[0],
+      phone: '',
+      logged_in: false
+    }]).select().single();
+
+    if (error) {
+      alert('Ошибка добавления врача в Supabase: ' + error.message);
+      return;
+    }
+    db.users.push(data);
+  }
+  state.modal = null;
+  render();
+}
+
+async function adminDeleteDoctor(docId) {
+  if (supabase) {
+    await supabase.from('profiles').delete().eq('id', docId);
+  }
+  db.users = db.users.filter(u => u.id !== docId);
+  render();
+}
+
+async function adminAddPayment() {
+  const lessons = parseInt(document.getElementById('pay-lessons').value, 10) || 0;
+  const amount = parseInt(document.getElementById('pay-amount').value, 10) || 0;
+  const note = document.getElementById('pay-note').value.trim();
+
+  if (lessons <= 0) {
+    alert('Укажите количество занятий');
+    return;
+  }
+  const pat = getPatientById(state.selectedPatientId);
+  if (!pat) return;
+
+  const newBalance = (pat.balance || 0) + lessons;
+
+  if (supabase) {
+    const { data, error } = await supabase.from('payments').insert([{
+      patient_id: pat.id,
+      lessons,
+      amount,
+      note,
+      payment_date: new Date().toISOString().split('T')[0]
+    }]).select().single();
+
+    await supabase.from('profiles').update({ balance: newBalance }).eq('id', pat.id);
+
+    if (data) db.payments.unshift(data);
+  }
+  pat.balance = newBalance;
+  state.modal = null;
+  render();
+}
+
+async function generateScheduleSlots() {
+  const fromHour = parseInt(document.getElementById('slot-from')?.value ?? 8, 10);
+  const toHour = parseInt(document.getElementById('slot-to')?.value ?? 20, 10);
+  const cap = parseInt(document.getElementById('slot-cap')?.value ?? 10, 10);
+  const days = parseInt(document.getElementById('slot-days')?.value ?? 7, 10);
+
+  const baseDate = new Date();
+  const monthsGen = ['ЯНВАРЯ','ФЕВРАЛЯ','МАРТА','АПРЕЛЯ','МАЯ','ИЮНЯ','ИЮЛЯ','АВГУСТА','СЕНТЯБРЯ','ОКТЯБРЯ','НОЯБРЯ','ДЕКАБРЯ'];
+  const insertPayload = [];
+
+  for (let d = 0; d < days; d++) {
+    const dt = new Date(baseDate);
+    dt.setDate(baseDate.getDate() + d);
+    let dayLabel = `${dt.getDate()} ${monthsGen[dt.getMonth()]}`;
+    if (d === 0) dayLabel = 'СЕГОДНЯ';
+    else if (d === 1) dayLabel = 'ЗАВТРА';
+
+    for (let h = fromHour; h < toHour; h++) {
+      const timeStr = String(h).padStart(2, '0') + ':00';
+      insertPayload.push({
+        day_index: d,
+        day_label: dayLabel,
+        slot_time: timeStr,
+        capacity: cap,
+        booked_patient_ids: []
+      });
+    }
+  }
+
+  if (supabase) {
+    await supabase.from('schedule_slots').delete().neq('day_index', -1);
+    await supabase.from('schedule_slots').insert(insertPayload);
+    await fetchCloudData();
+  }
+  state.activeTab = 'schedule';
+  render();
+}
+
+// ==========================================
+// 6. ДЕЙСТВИЯ ВРАЧА
+// ==========================================
+async function doctorTakePatient(patId) {
+  const pat = getPatientById(patId);
+  if (pat && state.currentUser) {
+    if (supabase) {
+      await supabase.from('profiles').update({ doctor_id: state.currentUser.id }).eq('id', pat.id);
+    }
+    pat.doctor_id = state.currentUser.id;
+    state.doctorPatientsFilter = 'mine';
+    render();
+  }
+}
+
+function openEditPrescriptions(patId) {
+  const current = db.prescriptions[patId] || [];
+  state.tempPrescriptions = JSON.parse(JSON.stringify(current));
+  state.subScreen = 'editPrescriptions';
+  render();
+}
+
+function syncPrescriptionInputsFromDOM() {
+  state.tempPrescriptions.forEach((item, idx) => {
+    const sEl = document.getElementById(`presc-sets-${idx}`);
+    const rEl = document.getElementById(`presc-reps-${idx}`);
+    const nEl = document.getElementById(`presc-note-${idx}`);
+    if (sEl) item.sets = parseInt(sEl.value, 10) || 1;
+    if (rEl) item.reps = parseInt(rEl.value, 10) || 10;
+    if (nEl) item.note = nEl.value;
+  });
+}
+
+function movePrescription(idx, dir) {
+  syncPrescriptionInputsFromDOM();
+  const target = idx + dir;
+  if (target < 0 || target >= state.tempPrescriptions.length) return;
+  const tmp = state.tempPrescriptions[idx];
+  state.tempPrescriptions[idx] = state.tempPrescriptions[target];
+  state.tempPrescriptions[target] = tmp;
+  render();
+}
+
+function removePrescriptionItem(idx) {
+  syncPrescriptionInputsFromDOM();
+  state.tempPrescriptions.splice(idx, 1);
+  render();
+}
+
+function addPrescriptionExercise(exId) {
+  syncPrescriptionInputsFromDOM();
+  state.tempPrescriptions.push({ exerciseId: exId, sets: 1, reps: 12, note: '' });
+  render();
+}
+
+async function savePrescriptions() {
+  syncPrescriptionInputsFromDOM();
+  const patId = state.selectedPatientId;
+
+  if (supabase) {
+    await supabase.from('prescriptions').delete().eq('patient_id', patId);
+    const payload = state.tempPrescriptions.map((p, idx) => ({
+      patient_id: patId,
+      exercise_id: p.exerciseId,
+      sets: p.sets,
+      reps: p.reps,
+      note: p.note,
+      sort_order: idx
+    }));
+    if (payload.length > 0) {
+      await supabase.from('prescriptions').insert(payload);
+    }
+    await fetchCloudData();
+  }
+  state.subScreen = 'patientDetail';
+  render();
+}
+
+function openExerciseForm(exId = null) {
+  if (exId) {
+    const ex = getExerciseById(exId);
+    state.exerciseFormDraft = { ...ex };
+  } else {
+    state.exerciseFormDraft = { id: null, title: '', description: '', photo: '', video: '' };
+  }
+  state.subScreen = 'exerciseForm';
+  render();
+}
+
+async function handleFileUpload(inputEl, type) {
+  const file = inputEl.files && inputEl.files[0];
+  if (!file) return;
+
+  const titleEl = document.getElementById('ex-form-title');
+  const descEl = document.getElementById('ex-form-desc');
+  if (titleEl) state.exerciseFormDraft.title = titleEl.value;
+  if (descEl) state.exerciseFormDraft.description = descEl.value;
+
+  if (!supabase) {
+    // Режим оффлайн fallback (DataURL)
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      if (type === 'photo') state.exerciseFormDraft.photo = e.target.result;
+      if (type === 'video') state.exerciseFormDraft.video = e.target.result;
+      render();
+    };
+    reader.readAsDataURL(file);
+    return;
+  }
+
+  // Загрузка в Supabase Storage (корзина exercise-media)
+  try {
+    const ext = file.name.split('.').pop();
+    const filePath = `${type}s/${Date.now()}_${Math.random().toString(36).substring(2,7)}.${ext}`;
+    const { error: uploadError } = await supabase.storage.from('exercise-media').upload(filePath, file);
+
+    if (uploadError) {
+      alert('Ошибка загрузки файла в хранилище Supabase: ' + uploadError.message);
+      return;
+    }
+    const { data: urlData } = supabase.storage.from('exercise-media').getPublicUrl(filePath);
+    if (type === 'photo') state.exerciseFormDraft.photo = urlData.publicUrl;
+    if (type === 'video') state.exerciseFormDraft.video = urlData.publicUrl;
+    render();
+  } catch (err) {
+    alert('Исключение при передаче файла: ' + err.message);
+  }
+}
+
+async function saveExerciseForm() {
+  const title = document.getElementById('ex-form-title').value.trim();
+  const description = document.getElementById('ex-form-desc').value.trim();
+  if (!title) {
+    alert('Введите название упражнения');
+    return;
+  }
+
+  const payload = {
+    title,
+    description,
+    photo_url: state.exerciseFormDraft.photo || '',
+    video_url: state.exerciseFormDraft.video || ''
+  };
+
+  if (supabase) {
+    if (state.exerciseFormDraft.id) {
+      await supabase.from('exercises').update(payload).eq('id', state.exerciseFormDraft.id);
+      state.subScreen = 'exerciseDetail';
+    } else {
+      await supabase.from('exercises').insert([payload]);
+      state.subScreen = null;
+    }
+    await fetchCloudData();
+  }
+  render();
+}
+
+async function deleteExercise(exId) {
+  if (supabase) {
+    await supabase.from('exercises').delete().eq('id', exId);
+    await fetchCloudData();
+  }
+  state.subScreen = null;
+  render();
+}
+
+// ==========================================
+// 7. ДЕЙСТВИЯ ПАЦИЕНТА (ТРЕНИРОВКА)
+// ==========================================
+function startWorkoutSession() {
+  const patId = state.currentUser.id;
+  const list = db.prescriptions[patId] || [];
+  if (list.length === 0) {
+    alert('Вам ещё не назначены упражнения');
+    return;
+  }
+  const first = list[0];
+  state.workoutState = {
+    index: 0,
+    sets: first.sets,
+    reps: first.reps,
+    weight: '',
+    feeling: 'Норм',
+    comment: '',
+    showExample: false
+  };
+  state.subScreen = 'workoutSession';
+  render();
+}
+
+function syncWorkoutInputs() {
+  const sEl = document.getElementById('wo-sets');
+  const rEl = document.getElementById('wo-reps');
+  const wEl = document.getElementById('wo-weight');
+  const cEl = document.getElementById('wo-comment');
+  if (sEl) state.workoutState.sets = parseInt(sEl.value, 10) || 1;
+  if (rEl) state.workoutState.reps = parseInt(rEl.value, 10) || 10;
+  if (wEl) state.workoutState.weight = wEl.value.trim();
+  if (cEl) state.workoutState.comment = cEl.value;
+}
+
+async function recordWorkoutStep(status) {
+  syncWorkoutInputs();
+  const patId = state.currentUser.id;
+  const list = db.prescriptions[patId] || [];
+  const currentItem = list[state.workoutState.index];
+  const ex = getExerciseById(currentItem.exerciseId);
+
+  const report = {
+    patient_id: patId,
+    exercise_id: currentItem.exerciseId,
+    exercise_title: ex ? ex.title : 'Упражнение',
+    date_label: 'СЕГОДНЯ',
+    sets: state.workoutState.sets,
+    reps: state.workoutState.reps,
+    weight: state.workoutState.weight,
+    feeling: state.workoutState.feeling,
+    comment: status === 'skipped' ? 'Не выполнено' : state.workoutState.comment,
+    status
+  };
+
+  if (supabase) {
+    await supabase.from('workout_history').insert([report]);
+    await fetchCloudData();
+  }
+
+  const nextIdx = state.workoutState.index + 1;
+  if (nextIdx < list.length) {
+    const nextItem = list[nextIdx];
+    state.workoutState = {
+      index: nextIdx,
+      sets: nextItem.sets,
+      reps: nextItem.reps,
+      weight: '',
+      feeling: 'Норм',
+      comment: '',
+      showExample: false
+    };
+    state.modal = null;
+    render();
+  } else {
+    state.modal = 'workoutFinished';
+    render();
+  }
+}
+
+async function patientBookSlot(dayLabel, timeStr) {
+  const pat = state.currentUser;
+  if ((pat.balance || 0) <= 0) {
+    alert('У вас нет оплаченных занятий. Обратитесь к Администратору.');
+    return;
+  }
+  const bookedStr = `${dayLabel}, ${timeStr}`;
+  const newBalance = Math.max(0, (pat.balance || 0) - 1);
+
+  if (supabase) {
+    await supabase.from('profiles').update({
+      booked_slot: bookedStr,
+      balance: newBalance
+    }).eq('id', pat.id);
+    await fetchCloudData();
+  }
+  state.modal = null;
+  render();
+}
+
+async function saveProfileChanges() {
+  const nameEl = document.getElementById('prof-name');
+  const phoneEl = document.getElementById('prof-phone');
+  const name = nameEl ? nameEl.value.trim() : '';
+  const phone = phoneEl ? phoneEl.value.trim() : '';
+
+  if (supabase) {
+    await supabase.from('profiles').update({ name, phone }).eq('id', state.currentUser.id);
+  }
+  state.currentUser.name = name;
+  state.currentUser.phone = phone;
+  alert('Профиль сохранён в Supabase');
+  render();
+}
+
+// ==========================================
+// 8. ГЕНЕРАЦИЯ HTML-ЭКРАНОВ
+// ==========================================
+function render() {
+  const container = document.getElementById('app-container');
+
+  if (!state.currentUser) {
+    container.innerHTML = renderAuthScreen() + renderModal();
+    return;
+  }
+
+  let contentHtml = '';
+  const role = state.currentUser.role;
+
+  if (state.subScreen === 'patientDetail') contentHtml = renderPatientDetailScreen();
+  else if (state.subScreen === 'patientHistory') contentHtml = renderPatientHistoryScreen();
+  else if (state.subScreen === 'editPrescriptions') contentHtml = renderEditPrescriptionsScreen();
+  else if (state.subScreen === 'exerciseDetail') contentHtml = renderExerciseDetailScreen();
+  else if (state.subScreen === 'exerciseForm') contentHtml = renderExerciseFormScreen();
+  else if (state.subScreen === 'workoutSession') contentHtml = renderWorkoutSessionScreen();
+  else {
+    if (role === 'admin') contentHtml = renderAdminTabs();
+    else if (role === 'doctor') contentHtml = renderDoctorTabs();
+    else contentHtml = renderPatientTabs();
+  }
+
+  const navHtml = state.subScreen === 'workoutSession' ? '' : renderBottomNav(role);
+  const modalHtml = renderModal();
+
+  container.innerHTML = contentHtml + navHtml + modalHtml;
+}
+
+function renderAuthScreen() {
+  const isConnected = !!supabase;
+  return `
+    <div class="min-h-screen flex flex-col justify-between px-6 pt-10 pb-8 bg-[#f7f7f9]">
+      <div>
+        <div class="flex justify-end mb-2">
+          <button onclick="state.modal='configSupabase'; render();" class="text-xs font-semibold px-3 py-1.5 rounded-full flex items-center gap-1.5 ${isConnected ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-700'}">
+            <span class="w-2 h-2 rounded-full ${isConnected ? 'bg-green-500' : 'bg-amber-500'}"></span>
+            <span>${isConnected ? 'Supabase подключен' : 'Настроить Supabase'}</span>
+          </button>
+        </div>
+
+        <div class="flex flex-col items-center text-center mb-6">
+          <div class="w-20 h-20 rounded-2xl brand-purple flex items-center justify-center mb-3 shadow-md">
+            <svg class="w-12 h-12 text-white" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/>
+            </svg>
+          </div>
+          <h1 class="text-2xl font-bold text-gray-900">Центр Бубновского</h1>
+          <p class="text-gray-500 text-sm mt-0.5">
+            ${state.authStep === 'email' ? 'Войдите по e-mail' : 'Введите код из письма'}
+          </p>
+        </div>
+
+        ${state.authStep === 'email' ? `
+          <div class="space-y-4">
+            <div>
+              <label class="block text-xs font-medium text-gray-600 mb-1.5">E-mail</label>
+              <input type="email" value="${state.authEmail}" oninput="state.authEmail = this.value" placeholder="example@email.com" class="input-field bg-white">
+            </div>
+            <button onclick="requestCode()" class="w-full brand-purple text-white font-semibold py-3.5 rounded-xl shadow-sm active:opacity-90">
+              Получить код
+            </button>
+            <p class="text-center text-xs text-gray-400 leading-relaxed px-2">
+              Регистрация и вход — без паролей. Код подтверждения отправляется на e-mail.
+            </p>
+          </div>
+        ` : `
+          <div class="space-y-4">
+            <div class="bg-[#fffbeb] border border-[#f59e0b] rounded-xl p-3.5 text-sm">
+              <div class="font-semibold text-[#b45309] flex items-center gap-1.5">
+                <span>⚠️</span> <span>Тестовый режим</span>
+              </div>
+              <div class="text-gray-800 mt-1">
+                Ваш код подтверждения: <span class="font-bold">${state.authGeneratedCode}</span>
+              </div>
+            </div>
+
+            <div>
+              <label class="block text-xs font-medium text-gray-600 mb-1.5">Код из письма</label>
+              <input type="text" value="${state.authCodeInput}" oninput="state.authCodeInput = this.value" placeholder="000000" class="input-field bg-white font-mono tracking-widest">
+            </div>
+
+            ${state.authIsNewUser ? `
+              <div>
+                <label class="block text-xs font-medium text-gray-600 mb-1.5">Ваше имя</label>
+                <input type="text" value="${state.authNameInput}" oninput="state.authNameInput = this.value" placeholder="Иван Петров" class="input-field bg-white">
+              </div>
+            ` : ''}
+
+            <button onclick="verifyCodeAndLogin()" class="w-full brand-purple text-white font-semibold py-3.5 rounded-xl shadow-sm active:opacity-90">
+              ${state.authIsNewUser ? 'Создать аккаунт' : 'Войти'}
+            </button>
+
+            <button onclick="state.authStep = 'email'; render();" class="w-full text-center text-sm brand-purple-text font-medium py-1">
+              Назад
+            </button>
+          </div>
+        `}
+      </div>
+
+      <div class="card p-4 mt-6 bg-white/90">
+        <div class="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2">Тестовые аккаунты из базы:</div>
+        <div class="grid grid-cols-1 gap-1.5">
+          <button onclick="quickLogin('requital@yahoo.com')" class="text-left px-3 py-2 rounded-lg bg-purple-50 text-xs flex justify-between items-center">
+            <span><b>Админ</b> (Дмитрий)</span>
+            <span class="text-gray-500">requital@yahoo.com</span>
+          </button>
+          <button onclick="quickLogin('doc1@aol.com')" class="text-left px-3 py-2 rounded-lg bg-purple-50 text-xs flex justify-between items-center">
+            <span><b>Врач</b> (Пробкин)</span>
+            <span class="text-gray-500">doc1@aol.com</span>
+          </button>
+          <button onclick="quickLogin('pat1@aol.com')" class="text-left px-3 py-2 rounded-lg bg-purple-50 text-xs flex justify-between items-center">
+            <span><b>Пациент</b> (Соболева)</span>
+            <span class="text-gray-500">pat1@aol.com</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// --- Панель Администратора ---
+function renderAdminTabs() {
+  const doctors = db.users.filter(u => u.role === 'doctor');
+  const patients = db.users.filter(u => u.role === 'patient');
+
+  if (state.activeTab === 'home') {
+    return `
+      <div class="p-4 pt-6 space-y-5">
+        <div>
+          <h1 class="text-2xl font-bold">Админ-панель</h1>
+          <p class="text-xs text-gray-500 mt-0.5">Центр Бубновского (Supabase)</p>
+        </div>
+
+        <div class="grid grid-cols-2 gap-3">
+          <div onclick="state.activeTab='doctors'; render();" class="card p-4 flex justify-between items-center cursor-pointer">
+            <div>
+              <div class="text-[11px] font-semibold text-gray-400 uppercase">ВРАЧЕЙ</div>
+              <div class="text-3xl font-bold mt-1">${doctors.length}</div>
+            </div>
+            <div class="brand-purple-text">${ICONS.medkit}</div>
+          </div>
+          <div onclick="state.activeTab='patients'; render();" class="card p-4 flex justify-between items-center cursor-pointer">
+            <div>
+              <div class="text-[11px] font-semibold text-gray-400 uppercase">ПАЦИЕНТОВ</div>
+              <div class="text-3xl font-bold mt-1">${patients.length}</div>
+            </div>
+            <div class="brand-purple-text">${ICONS.users}</div>
+          </div>
+        </div>
+
+        <div>
+          <div class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">БЫСТРЫЕ ДЕЙСТВИЯ</div>
+          <div class="space-y-2.5">
+            <button onclick="state.modal='addDoctor'; render();" class="card w-full p-4 flex items-center gap-3 text-left font-semibold text-sm">
+              <span class="w-6 h-6 rounded-full brand-purple text-white flex items-center justify-center text-base leading-none">+</span>
+              <span>Добавить Врача</span>
+            </button>
+            <button onclick="state.activeTab='schedule'; render();" class="card w-full p-4 flex items-center gap-3 text-left font-semibold text-sm">
+              <span class="brand-purple-text">${ICONS.calendar}</span>
+              <span>Создать слоты на неделю</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  if (state.activeTab === 'doctors') {
+    return `
+      <div class="p-4 pt-6 space-y-4">
+        <div class="flex justify-between items-center">
+          <h1 class="text-2xl font-bold">Врачи</h1>
+          <button onclick="state.modal='addDoctor'; render();" class="brand-purple text-white text-xs font-semibold px-3.5 py-2 rounded-xl">
+            + Добавить
+          </button>
+        </div>
+
+        <div class="space-y-2.5">
+          ${doctors.map(doc => {
+            const patCount = patients.filter(p => p.doctor_id === doc.id).length;
+            return `
+              <div class="card p-4 flex justify-between items-center">
+                <div class="flex items-center gap-3">
+                  <div class="brand-purple-text">${ICONS.medkit}</div>
+                  <div>
+                    <div class="font-bold text-base">${doc.name || 'Без имени'}</div>
+                    <div class="text-xs text-gray-500">${doc.email}</div>
+                    <div class="flex items-center gap-2 mt-1 text-[11px]">
+                      <span class="${doc.logged_in ? 'text-green-600' : 'text-amber-600'} font-medium">
+                        ${doc.logged_in ? 'Активен' : 'Не входил'}
+                      </span>
+                      <span class="text-gray-400">${patCount} пациентов</span>
+                    </div>
+                  </div>
+                </div>
+                <button onclick="adminDeleteDoctor('${doc.id}')" class="text-red-500 text-xs font-medium px-2 py-1">
+                  Удалить
+                </button>
+              </div>
+            `;
+          }).join('')}
+        </div>
+      </div>
+    `;
+  }
+
+  if (state.activeTab === 'patients') {
+    return `
+      <div class="p-4 pt-6 space-y-4">
+        <div>
+          <h1 class="text-2xl font-bold">Пациенты</h1>
+          <p class="text-xs text-gray-500">${patients.length} человек</p>
+        </div>
+
+        <div class="space-y-2.5">
+          ${patients.map(pat => {
+            const doc = getDoctorById(pat.doctor_id);
+            const firstLetter = (pat.name || 'П')[0].toUpperCase();
+            return `
+              <div onclick="state.selectedPatientId='${pat.id}'; state.subScreen='patientDetail'; render();" class="card p-4 flex justify-between items-center cursor-pointer active:bg-gray-50">
+                <div class="flex items-center gap-3">
+                  <div class="w-10 h-10 rounded-full bg-purple-100 brand-purple-text font-bold flex items-center justify-center">
+                    ${firstLetter}
+                  </div>
+                  <div>
+                    <div class="font-bold text-base">${pat.name}</div>
+                    <div class="text-xs text-gray-500">${pat.email}</div>
+                    <div class="flex items-center gap-2.5 mt-1 text-xs font-medium">
+                      <span class="${(pat.balance || 0) > 0 ? 'text-green-600' : 'text-red-500'}">${pat.balance || 0} зан.</span>
+                      <span class="${doc ? 'text-gray-500' : 'text-amber-600'}">${doc ? 'Врач: ' + doc.name : 'Без Врача'}</span>
+                    </div>
+                  </div>
+                </div>
+                <span class="text-gray-400 text-lg">›</span>
+              </div>
+            `;
+          }).join('')}
+        </div>
+      </div>
+    `;
+  }
+
+  if (state.activeTab === 'schedule') {
+    const s = db.slotSettings || { fromHour: 8, toHour: 20, capPerHour: 4, daysCount: 7 };
+    return `
+      <div class="p-4 pt-6 space-y-5">
+        <div>
+          <h1 class="text-2xl font-bold">Расписание</h1>
+          <p class="text-xs text-gray-500">Управление слотами зала</p>
+        </div>
+
+        <div class="card p-4 space-y-3">
+          <div class="text-xs font-semibold text-gray-400 uppercase">СОЗДАНИЕ СЛОТОВ</div>
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="text-xs text-gray-600 block mb-1">С (час)</label>
+              <input id="slot-from" type="number" value="${s.fromHour}" class="input-field">
+            </div>
+            <div>
+              <label class="text-xs text-gray-600 block mb-1">До (час)</label>
+              <input id="slot-to" type="number" value="${s.toHour}" class="input-field">
+            </div>
+            <div>
+              <label class="text-xs text-gray-600 block mb-1">Мест/час</label>
+              <input id="slot-cap" type="number" value="${s.capPerHour}" class="input-field">
+            </div>
+            <div>
+              <label class="text-xs text-gray-600 block mb-1">Дней</label>
+              <input id="slot-days" type="number" value="${s.daysCount}" class="input-field">
+            </div>
+          </div>
+          <button onclick="generateScheduleSlots()" class="w-full brand-purple text-white font-semibold py-3 rounded-xl mt-2">
+            Создать слоты в Supabase
+          </button>
+        </div>
+
+        <div>
+          <div class="text-xs font-semibold text-gray-400 uppercase mb-2">ТЕКУЩЕЕ РАСПИСАНИЕ</div>
+          ${renderScheduleList()}
+        </div>
+      </div>
+    `;
+  }
+
+  return renderProfileScreen('Администратор', false);
+}
+
+// --- Панель Врача ---
+function renderDoctorTabs() {
+  const patients = db.users.filter(u => u.role === 'patient');
+  const myPatients = patients.filter(p => p.doctor_id === state.currentUser.id);
+  const freePatients = patients.filter(p => !p.doctor_id);
+
+  if (state.activeTab === 'patients') {
+    const listToShow = state.doctorPatientsFilter === 'mine' ? myPatients : freePatients;
+    return `
+      <div class="p-4 pt-6 space-y-4">
+        <h1 class="text-2xl font-bold">Пациенты</h1>
+
+        <div class="bg-gray-200/80 p-1 rounded-xl grid grid-cols-2 text-xs font-semibold">
+          <button onclick="state.doctorPatientsFilter='mine'; render();" class="py-2 rounded-lg transition ${state.doctorPatientsFilter === 'mine' ? 'bg-white shadow-sm text-gray-900' : 'text-gray-500'}">
+            Мои (${myPatients.length})
+          </button>
+          <button onclick="state.doctorPatientsFilter='free'; render();" class="py-2 rounded-lg transition ${state.doctorPatientsFilter === 'free' ? 'bg-white shadow-sm text-gray-900' : 'text-gray-500'}">
+            Свободные (${freePatients.length})
+          </button>
+        </div>
+
+        ${listToShow.length === 0 ? `
+          <div class="card p-8 text-center">
+            <div class="font-bold text-base">
+              ${state.doctorPatientsFilter === 'mine' ? 'У вас пока нет пациентов' : 'Нет свободных пациентов'}
+            </div>
+            <p class="text-xs text-gray-400 mt-1">
+              ${state.doctorPatientsFilter === 'mine' ? 'Возьмите пациентов из вкладки «Свободные».' : 'Все пациенты уже распределены.'}
+            </p>
+          </div>
+        ` : `
+          <div class="space-y-2.5">
+            ${listToShow.map(pat => {
+              const firstLetter = (pat.name || 'П')[0].toUpperCase();
+              return `
+                <div class="card p-4 flex justify-between items-center">
+                  <div onclick="state.selectedPatientId='${pat.id}'; state.subScreen='patientDetail'; render();" class="flex items-center gap-3 flex-1 cursor-pointer">
+                    <div class="w-10 h-10 rounded-full bg-purple-100 brand-purple-text font-bold flex items-center justify-center">
+                      ${firstLetter}
+                    </div>
+                    <div>
+                      <div class="font-bold text-base">${pat.name}</div>
+                      <div class="text-xs text-gray-500">${pat.email}</div>
+                    </div>
+                  </div>
+                  ${state.doctorPatientsFilter === 'free' ? `
+                    <button onclick="doctorTakePatient('${pat.id}')" class="brand-purple text-white text-xs font-semibold px-3 py-2 rounded-lg">
+                      Взять себе
+                    </button>
+                  ` : `<span onclick="state.selectedPatientId='${pat.id}'; state.subScreen='patientDetail'; render();" class="text-gray-400 text-lg px-2 cursor-pointer">›</span>`}
+                </div>
+              `;
+            }).join('')}
+          </div>
+        `}
+      </div>
+    `;
+  }
+
+  if (state.activeTab === 'exercises') {
+    return `
+      <div class="p-4 pt-6 space-y-4">
+        <div class="flex justify-between items-center">
+          <div>
+            <h1 class="text-2xl font-bold">Упражнения</h1>
+            <p class="text-xs text-gray-500">База зала</p>
+          </div>
+          <button onclick="openExerciseForm(null)" class="brand-purple text-white text-xs font-semibold px-3.5 py-2 rounded-xl">
+            + Создать
+          </button>
+        </div>
+
+        <div class="space-y-2.5">
+          ${db.exercises.map(ex => `
+            <div onclick="state.selectedExerciseId='${ex.id}'; state.subScreen='exerciseDetail'; render();" class="card p-4 flex justify-between items-center cursor-pointer active:bg-gray-50">
+              <div class="flex items-center gap-3">
+                <div class="brand-purple-text">${ICONS.dumbbell}</div>
+                <div>
+                  <div class="font-bold text-sm">${ex.title}</div>
+                  <div class="text-xs text-gray-400 mt-0.5">${ex.description || 'Без описания'}</div>
+                  ${(ex.photo || ex.video) ? `
+                    <div class="flex items-center gap-2.5 mt-1 text-[11px] text-gray-500">
+                      ${ex.photo ? `<span>🖼 фото</span>` : ''}
+                      ${ex.video ? `<span>📹 видео</span>` : ''}
+                    </div>
+                  ` : ''}
+                </div>
+              </div>
+              <span class="text-gray-400 text-lg">›</span>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    `;
+  }
+
+  if (state.activeTab === 'schedule') {
+    return `
+      <div class="p-4 pt-6 space-y-4">
+        <div>
+          <h1 class="text-2xl font-bold">Расписание</h1>
+          <p class="text-xs text-gray-500">Загрузка зала на 2 недели</p>
+        </div>
+        ${renderScheduleList()}
+      </div>
+    `;
+  }
+
+  return renderProfileScreen('Врач', true);
+}
+
+// --- Панель Пациента ---
+function renderPatientTabs() {
+  const pat = state.currentUser;
+  const doc = getDoctorById(pat.doctor_id);
+  const presc = db.prescriptions[pat.id] || [];
+  const patHistory = db.history.filter(h => h.patientId === pat.id);
+
+  if (state.activeTab === 'home') {
+    return `
+      <div class="p-4 pt-6 space-y-4">
+        <div>
+          <h1 class="text-2xl font-bold">Добрый вечер!</h1>
+          <p class="text-xs text-gray-500">${pat.name}</p>
+        </div>
+
+        <div class="card p-4 flex justify-between items-center">
+          <div>
+            <div class="text-[11px] font-semibold text-gray-400 uppercase">ОПЛАЧЕНО ЗАНЯТИЙ</div>
+            <div class="text-3xl font-bold mt-1">${pat.balance || 0}</div>
+            ${(pat.balance || 0) === 0 ? `<div class="text-[11px] text-red-500 mt-1">У вас не осталось оплаченных занятий. Обратитесь к Администратору.</div>` : ''}
+          </div>
+          <div class="w-11 h-11 rounded-xl brand-purple text-white flex items-center justify-center">
+            <svg class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24"><path d="M20 4H4c-1.11 0-1.99.89-1.99 2L2 18c0 1.11.89 2 2 2h16c1.11 0 2-.89 2-2V6c0-1.11-.89-2-2-2zm0 14H4v-6h16v6zm0-10H4V6h16v2z"/></svg>
+          </div>
+        </div>
+
+        <div class="card p-4">
+          ${doc ? `
+            <div class="text-[11px] font-semibold text-gray-400 uppercase">ВАШ ВРАЧ</div>
+            <div class="font-bold text-base mt-0.5">${doc.name}</div>
+            <div class="text-xs text-gray-500">${doc.email}</div>
+          ` : `
+            <div class="font-bold text-sm">Врач ещё не назначен</div>
+            <div class="text-xs text-gray-400 mt-0.5">Дождитесь, пока Врач возьмёт вас под наблюдение и назначит упражнения.</div>
+          `}
+        </div>
+
+        <div>
+          <div class="flex justify-between items-center mb-1.5">
+            <span class="text-xs font-semibold text-gray-400 uppercase">БЛИЖАЙШАЯ ЗАПИСЬ</span>
+            <button onclick="state.activeTab='schedule'; render();" class="text-xs brand-purple-text font-medium">Все</button>
+          </div>
+          <div onclick="state.activeTab='schedule'; render();" class="card p-3.5 text-sm font-medium cursor-pointer flex justify-between items-center">
+            <span>${pat.booked_slot ? `Запись: <b>${pat.booked_slot}</b>` : 'У вас нет записи. <b>Записаться →</b>'}</span>
+          </div>
+        </div>
+
+        <div>
+          <div class="flex justify-between items-center mb-1.5">
+            <span class="text-xs font-semibold text-gray-400 uppercase">НАЗНАЧЕННЫЕ УПРАЖНЕНИЯ</span>
+            <button onclick="state.activeTab='exercises'; render();" class="text-xs brand-purple-text font-medium">Все</button>
+          </div>
+
+          ${presc.length === 0 ? `
+            <div class="card p-6 text-center">
+              <div class="font-bold text-sm">Упражнения ещё не назначены</div>
+              <p class="text-xs text-gray-400 mt-1">Ваш Врач ещё не выбрал для вас комплекс упражнений.</p>
+            </div>
+          ` : `
+            <div class="space-y-2">
+              ${presc.map((item, i) => {
+                const ex = getExerciseById(item.exerciseId);
+                return `
+                  <div onclick="state.selectedExerciseId='${item.exerciseId}'; state.subScreen='exerciseDetail'; render();" class="card p-3.5 flex justify-between items-center cursor-pointer">
+                    <div class="flex items-center gap-3">
+                      <span class="text-xs font-bold brand-purple-text w-4">${i + 1}</span>
+                      <div>
+                        <div class="font-semibold text-sm">${ex ? ex.title : 'Упражнение'}</div>
+                        <div class="text-xs text-gray-400">${item.sets} × ${item.reps}</div>
+                      </div>
+                    </div>
+                    <span class="text-gray-400">›</span>
+                  </div>
+                `;
+              }).join('')}
+              <button onclick="startWorkoutSession()" class="w-full brand-purple text-white font-semibold py-3.5 rounded-xl mt-2 flex items-center justify-center gap-2 shadow-sm">
+                <span>▶</span> <span>Начать тренировку</span>
+              </button>
+            </div>
+          `}
+        </div>
+      </div>
+    `;
+  }
+
+  if (state.activeTab === 'exercises') {
+    return `
+      <div class="p-4 pt-6 space-y-4">
+        <div>
+          <h1 class="text-2xl font-bold">Упражнения</h1>
+          <p class="text-xs text-gray-500">Назначенный комплекс</p>
+        </div>
+
+        <div class="space-y-2.5">
+          ${presc.map((item, i) => {
+            const ex = getExerciseById(item.exerciseId);
+            return `
+              <div onclick="state.selectedExerciseId='${item.exerciseId}'; state.subScreen='exerciseDetail'; render();" class="card p-4 flex justify-between items-center cursor-pointer">
+                <div class="flex items-center gap-3">
+                  <span class="text-xs font-bold brand-purple-text w-4">${i + 1}</span>
+                  <div>
+                    <div class="font-bold text-sm">${ex ? ex.title : ''}</div>
+                    <div class="text-xs text-gray-400">${ex ? ex.description : ''}</div>
+                    <div class="text-xs text-gray-500 mt-0.5">
+                      ${item.sets} подхода × ${item.reps} раз ${item.note ? '· ' + item.note : ''}
+                    </div>
+                  </div>
+                </div>
+                <span class="text-gray-400 text-lg">›</span>
+              </div>
+            `;
+          }).join('')}
+        </div>
+
+        ${presc.length > 0 ? `
+          <button onclick="startWorkoutSession()" class="w-full brand-purple text-white font-semibold py-3.5 rounded-xl flex items-center justify-center gap-2">
+            <span>▶</span> <span>Начать тренировку</span>
+          </button>
+        ` : ''}
+      </div>
+    `;
+  }
+
+  if (state.activeTab === 'schedule') {
+    return `
+      <div class="p-4 pt-6 space-y-4">
+        <div>
+          <h1 class="text-2xl font-bold">Расписание</h1>
+          <p class="text-xs text-gray-500">Баланс: ${pat.balance || 0} зан.</p>
+        </div>
+
+        <button onclick="state.modal='bookSlot'; render();" class="w-full brand-purple text-white font-semibold py-3.5 rounded-xl">
+          + Записаться на занятие
+        </button>
+
+        <div>
+          <div class="text-xs font-semibold text-gray-400 uppercase mb-2">МОИ ЗАПИСИ</div>
+          ${pat.booked_slot ? `
+            <div class="card p-4 flex justify-between items-center">
+              <div>
+                <div class="font-bold text-sm">${pat.booked_slot}</div>
+                <div class="text-xs text-green-600 mt-0.5">Запись подтверждена</div>
+              </div>
+              <button onclick="if(supabase){supabase.from('profiles').update({booked_slot: null, balance: (pat.balance||0)+1}).eq('id', '${pat.id}').then(()=>fetchCloudData());}" class="text-xs text-red-500 font-medium">
+                Отменить
+              </button>
+            </div>
+          ` : `
+            <div class="card p-8 text-center">
+              <div class="font-bold text-sm">Нет активных записей</div>
+              <p class="text-xs text-gray-400 mt-1">Запишитесь на удобное вам время.</p>
+            </div>
+          `}
+        </div>
+      </div>
+    `;
+  }
+
+  if (state.activeTab === 'history') {
+    return `
+      <div class="p-4 pt-6 space-y-4">
+        <div>
+          <h1 class="text-2xl font-bold">История</h1>
+          <p class="text-xs text-gray-500">Тренировки и отметки</p>
+        </div>
+
+        <div class="space-y-2.5">
+          ${patHistory.map(h => `
+            <div class="card p-4 flex justify-between items-center">
+              <div>
+                <div class="font-bold text-sm">${h.exerciseTitle}</div>
+                <div class="text-xs text-gray-500 mt-0.5">
+                  ${h.status === 'skipped' ? 'Не выполнено' : `${h.sets} × ${h.reps}`}
+                </div>
+                ${h.comment && h.status !== 'skipped' ? `<div class="text-xs text-gray-400 mt-0.5">${h.comment}</div>` : ''}
+              </div>
+              <div class="text-right">
+                <div class="text-xs font-semibold ${h.status === 'skipped' ? 'text-red-500' : 'text-green-600'}">
+                  ${h.status === 'skipped' ? 'Пропуск' : 'Сделал'}
+                </div>
+                <div class="text-xs text-gray-400 mt-0.5">${h.feeling || 'Норм'}</div>
+              </div>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    `;
+  }
+
+  return renderProfileScreen('ЛИЧНЫЕ ДАННЫЕ', true, doc);
+}
+
+// --- Вложенные экраны деталей ---
+function renderPatientDetailScreen() {
+  const pat = getPatientById(state.selectedPatientId);
+  if (!pat) return '';
+  const isAdmin = state.currentUser.role === 'admin';
+  const isDoctor = state.currentUser.role === 'doctor';
+  const presc = db.prescriptions[pat.id] || [];
+  const patHistory = db.history.filter(h => h.patientId === pat.id);
+  const patPayments = db.payments.filter(p => p.patientId === pat.id);
+  const firstLetter = (pat.name || 'П')[0].toUpperCase();
+
+  return `
+    <div class="p-4 pt-5 space-y-4">
+      <button onclick="state.subScreen=null; render();" class="text-sm brand-purple-text font-medium flex items-center gap-1">
+        <span>‹</span> <span>Назад</span>
+      </button>
+
+      <div>
+        <h1 class="text-2xl font-bold">${pat.name}</h1>
+        <p class="text-xs text-gray-500">${pat.email}</p>
+      </div>
+
+      <div class="card p-4 flex items-center gap-3">
+        <div class="w-11 h-11 rounded-full bg-purple-100 brand-purple-text font-bold flex items-center justify-center">
+          ${firstLetter}
+        </div>
+        <div>
+          <div class="font-bold text-base">${pat.name}</div>
+          <div class="text-xs text-gray-500">${pat.email}</div>
+          <div class="text-xs font-semibold text-green-600 mt-1">${pat.balance || 0} зан.</div>
+        </div>
+      </div>
+
+      <div>
+        <div class="flex justify-between items-center mb-1.5">
+          <span class="text-xs font-semibold text-gray-400 uppercase">НАЗНАЧЕННЫЕ УПРАЖНЕНИЯ</span>
+          ${isDoctor ? `
+            <button onclick="openEditPrescriptions('${pat.id}')" class="text-xs brand-purple-text font-semibold">Изменить</button>
+          ` : ''}
+        </div>
+        ${presc.length === 0 ? `
+          <div class="card p-6 text-center text-sm font-semibold text-gray-700">Упражнения не назначены</div>
+        ` : `
+          <div class="card divide-y divide-gray-100">
+            ${presc.map((item, idx) => {
+              const ex = getExerciseById(item.exerciseId);
+              return `
+                <div class="p-3.5 flex items-center gap-3">
+                  <span class="text-xs font-bold brand-purple-text w-4">${idx + 1}</span>
+                  <div>
+                    <div class="font-semibold text-sm">${ex ? ex.title : ''}</div>
+                    <div class="text-xs text-gray-400">${item.sets} × ${item.reps}</div>
+                  </div>
+                </div>
+              `;
+            }).join('')}
+          </div>
+        `}
+      </div>
+
+      <div>
+        <div class="flex justify-between items-center mb-1.5">
+          <span class="text-xs font-semibold text-gray-400 uppercase">ИСТОРИЯ ТРЕНИРОВОК</span>
+          <button onclick="state.subScreen='patientHistory'; render();" class="text-xs brand-purple-text font-semibold">Все</button>
+        </div>
+        ${patHistory.length === 0 ? `
+          <div class="card p-4 text-center text-xs text-gray-400">Тренировок нет</div>
+        ` : `
+          <div class="card p-3.5 flex justify-between items-center">
+            <div>
+              <div class="font-semibold text-sm">${patHistory[0].exerciseTitle}</div>
+              <div class="text-xs text-gray-400">${patHistory[0].date} · ${patHistory[0].sets}×${patHistory[0].reps}</div>
+            </div>
+            <span class="text-green-600 font-bold">✓</span>
+          </div>
+        `}
+      </div>
+
+      ${isAdmin ? `
+        <div>
+          <div class="flex justify-between items-center mb-1.5">
+            <span class="text-xs font-semibold text-gray-400 uppercase">ОПЛАТА</span>
+            <button onclick="state.modal='addPayment'; render();" class="text-xs brand-purple-text font-semibold">Добавить</button>
+          </div>
+          ${patPayments.length === 0 ? `
+            <div class="card p-4 text-center text-xs text-gray-400">Оплат нет</div>
+          ` : `
+            <div class="space-y-2">
+              ${patPayments.map(pay => `
+                <div class="card p-3.5 flex justify-between items-center">
+                  <div>
+                    <div class="font-semibold text-sm">${pay.lessons} занятий</div>
+                    <div class="text-xs text-gray-400">${pay.date}</div>
+                  </div>
+                  <div class="font-semibold text-sm">${pay.amount ? pay.amount + ' ₽' : ''}</div>
+                </div>
+              `).join('')}
+            </div>
+          `}
+        </div>
+      ` : ''}
+    </div>
+  `;
+}
+
+function renderPatientHistoryScreen() {
+  const pat = getPatientById(state.selectedPatientId);
+  const patHistory = db.history.filter(h => h.patientId === state.selectedPatientId);
+  return `
+    <div class="p-4 pt-5 space-y-4">
+      <button onclick="state.subScreen='patientDetail'; render();" class="text-sm brand-purple-text font-medium flex items-center gap-1">
+        <span>‹</span> <span>Назад</span>
+      </button>
+      <div>
+        <h1 class="text-2xl font-bold">История</h1>
+        <p class="text-xs text-gray-500">${pat ? pat.name : ''}</p>
+      </div>
+      <div class="space-y-2.5">
+        ${patHistory.map(h => `
+          <div class="card p-4 flex justify-between items-start">
+            <div>
+              <div class="font-bold text-sm">${h.exerciseTitle}</div>
+              <div class="text-xs text-gray-500 mt-0.5">${h.sets} × ${h.reps} · ${h.feeling}</div>
+              ${h.comment ? `<div class="text-xs text-gray-400 italic mt-0.5">«${h.comment}»</div>` : ''}
+            </div>
+            <span class="text-green-600 font-bold">✓</span>
+          </div>
+        `).join('')}
+      </div>
+    </div>
+  `;
+}
+
+function renderEditPrescriptionsScreen() {
+  const assignedIds = state.tempPrescriptions.map(p => p.exerciseId);
+  const availableExercises = db.exercises.filter(e => !assignedIds.includes(e.id));
+
+  return `
+    <div class="p-4 pt-5 space-y-4">
+      <button onclick="state.subScreen='patientDetail'; render();" class="text-sm brand-purple-text font-medium flex items-center gap-1">
+        <span>‹</span> <span>Назад</span>
+      </button>
+
+      <h1 class="text-2xl font-bold">Назначения</h1>
+
+      <div class="text-xs font-semibold text-gray-400 uppercase">НАЗНАЧЕНО (${state.tempPrescriptions.length})</div>
+
+      <div class="space-y-3">
+        ${state.tempPrescriptions.map((item, idx) => {
+          const ex = getExerciseById(item.exerciseId);
+          return `
+            <div class="card p-4 space-y-3">
+              <div class="flex justify-between items-center">
+                <div class="font-bold text-sm">
+                  <span class="brand-purple-text mr-1">${idx + 1}</span> ${ex ? ex.title : ''}
+                </div>
+                <div class="flex items-center gap-2">
+                  ${idx > 0 ? `<button onclick="movePrescription(${idx}, -1)" class="text-gray-400 px-1.5">⌃</button>` : ''}
+                  ${idx < state.tempPrescriptions.length - 1 ? `<button onclick="movePrescription(${idx}, 1)" class="text-gray-400 px-1.5">⌄</button>` : ''}
+                  <button onclick="removePrescriptionItem(${idx})">${ICONS.trash}</button>
+                </div>
+              </div>
+
+              <div class="grid grid-cols-2 gap-3">
+                <div>
+                  <label class="text-xs text-gray-500 block mb-1">Подходов</label>
+                  <input id="presc-sets-${idx}" type="number" value="${item.sets}" class="input-field">
+                </div>
+                <div>
+                  <label class="text-xs text-gray-500 block mb-1">Раз/подход</label>
+                  <input id="presc-reps-${idx}" type="number" value="${item.reps}" class="input-field">
+                </div>
+              </div>
+
+              <div>
+                <label class="text-xs text-gray-500 block mb-1">Заметка</label>
+                <input id="presc-note-${idx}" type="text" value="${item.note || ''}" placeholder="Например: 10кг" class="input-field">
+              </div>
+            </div>
+          `;
+        }).join('')}
+      </div>
+
+      <button onclick="savePrescriptions()" class="w-full brand-purple text-white font-semibold py-3.5 rounded-xl">
+        Сохранить назначения в Supabase
+      </button>
+
+      <div>
+        <div class="text-xs font-semibold text-gray-400 uppercase mb-2">ДОСТУПНЫЕ УПРАЖНЕНИЯ</div>
+        ${availableExercises.length === 0 ? `
+          <div class="card p-4 text-center text-xs text-gray-400">
+            В базе нет упражнений или все уже добавлены
+          </div>
+        ` : `
+          <div class="space-y-2">
+            ${availableExercises.map(ex => `
+              <div onclick="addPrescriptionExercise('${ex.id}')" class="card p-3.5 flex justify-between items-center cursor-pointer">
+                <span class="text-sm font-medium">${ex.title}</span>
+                <span class="text-xs brand-purple-text font-bold">+ Добавить</span>
+              </div>
+            `).join('')}
+          </div>
+        `}
+      </div>
+    </div>
+  `;
+}
+
+function renderExerciseDetailScreen() {
+  const ex = getExerciseById(state.selectedExerciseId);
+  if (!ex) return '';
+  const isDoctor = state.currentUser.role === 'doctor';
+
+  return `
+    <div class="p-4 pt-5 space-y-4">
+      <button onclick="state.subScreen=null; render();" class="text-sm brand-purple-text font-medium flex items-center gap-1">
+        <span>‹</span> <span>Назад</span>
+      </button>
+
+      <h1 class="text-2xl font-bold">${ex.title}</h1>
+
+      ${ex.photo ? `
+        <div class="card overflow-hidden">
+          <img src="${ex.photo}" alt="${ex.title}" class="w-full h-44 object-cover">
+        </div>
+      ` : ''}
+
+      ${ex.video ? `
+        <div class="card overflow-hidden bg-black p-2">
+          <video src="${ex.video}" controls class="w-full h-44 rounded-lg"></video>
+        </div>
+      ` : ''}
+
+      <div class="card p-4">
+        <div class="font-bold text-base">${ex.title}</div>
+        <div class="text-sm text-gray-600 mt-1">${ex.description || ''}</div>
+      </div>
+
+      ${isDoctor ? `
+        <button onclick="openExerciseForm('${ex.id}')" class="card w-full py-3.5 font-semibold text-sm flex items-center justify-center gap-2">
+          <span>✎</span> <span>Редактировать</span>
+        </button>
+        <button onclick="deleteExercise('${ex.id}')" class="w-full text-center text-xs text-red-600 font-medium py-2">
+          Удалить из базы
+        </button>
+      ` : ''}
+    </div>
+  `;
+}
+
+function renderExerciseFormScreen() {
+  const d = state.exerciseFormDraft;
+  return `
+    <div class="p-4 pt-5 space-y-4">
+      <button onclick="state.subScreen = d.id ? 'exerciseDetail' : null; render();" class="text-sm brand-purple-text font-medium flex items-center gap-1">
+        <span>‹</span> <span>Назад</span>
+      </button>
+
+      <h1 class="text-2xl font-bold">${d.id ? 'Редактировать' : 'Новое упражнение'}</h1>
+
+      <div class="card p-4 space-y-3">
+        <div>
+          <label class="text-xs text-gray-600 block mb-1">Название</label>
+          <input id="ex-form-title" type="text" value="${d.title}" placeholder="Например: Тяга нижнего блока" class="input-field">
+        </div>
+        <div>
+          <label class="text-xs text-gray-600 block mb-1">Описание</label>
+          <textarea id="ex-form-desc" rows="3" placeholder="Техника выполнения, дыхание, амплитуда..." class="input-field">${d.description}</textarea>
+        </div>
+      </div>
+
+      <div class="card p-4 space-y-3">
+        <div class="text-xs font-semibold text-gray-400 uppercase">ФОТОГРАФИЯ (STORAGE)</div>
+        <label class="border-2 border-dashed border-gray-300 rounded-xl h-32 flex flex-col items-center justify-center text-gray-400 text-xs cursor-pointer overflow-hidden">
+          ${d.photo ? `<img src="${d.photo}" class="w-full h-full object-cover">` : `<span>🖼 Нажмите для выбора</span>`}
+          <input type="file" accept="image/*" class="hidden" onchange="handleFileUpload(this, 'photo')">
+        </label>
+      </div>
+
+      <div class="card p-4 space-y-3">
+        <div class="text-xs font-semibold text-gray-400 uppercase">ВИДЕО (STORAGE)</div>
+        <label class="border-2 border-dashed border-gray-300 rounded-xl h-28 flex flex-col items-center justify-center text-gray-400 text-xs cursor-pointer">
+          <span>📹 ${d.video ? 'Видео загружено' : 'Видео не выбрано'}</span>
+          <input type="file" accept="video/*" class="hidden" onchange="handleFileUpload(this, 'video')">
+        </label>
+      </div>
+
+      <button onclick="saveExerciseForm()" class="w-full brand-purple text-white font-semibold py-3.5 rounded-xl">
+        ${d.id ? 'Сохранить изменения' : 'Создать упражнение'}
+      </button>
+    </div>
+  `;
+}
+
+function renderWorkoutSessionScreen() {
+  const patId = state.currentUser.id;
+  const list = db.prescriptions[patId] || [];
+  const ws = state.workoutState;
+  const currentItem = list[ws.index];
+  const ex = getExerciseById(currentItem.exerciseId);
+  const progressPct = Math.round(((ws.index + 1) / list.length) * 100);
+  const feelings = ['Плохо', 'Так себе', 'Норм', 'Хорошо', 'Отлично'];
+
+  return `
+    <div class="p-4 pt-5 space-y-4">
+      <button onclick="state.subScreen=null; render();" class="text-sm brand-purple-text font-medium flex items-center gap-1">
+        <span>‹</span> <span>Назад</span>
+      </button>
+
+      <div>
+        <h1 class="text-2xl font-bold">Тренировка</h1>
+        <p class="text-xs text-gray-500">${ws.index + 1} из ${list.length}</p>
+        <div class="w-full h-1.5 bg-gray-200 rounded-full mt-2 overflow-hidden">
+          <div class="h-full brand-purple transition-all" style="width: ${progressPct}%"></div>
+        </div>
+      </div>
+
+      <div class="card p-4 space-y-3">
+        <div class="text-xs text-gray-400">Упражнение ${ws.index + 1} / ${list.length}</div>
+        <div class="font-bold text-lg">${ex ? ex.title : ''}</div>
+        <div class="text-xs text-gray-500">${ex ? ex.description : ''}</div>
+
+        ${currentItem.note ? `
+          <div class="bg-[#fffbeb] rounded-xl p-3 text-xs">
+            <div class="font-semibold text-[#d97706]">Заметка от Врача:</div>
+            <div class="text-gray-800 mt-0.5">${currentItem.note}</div>
+          </div>
+        ` : ''}
+
+        <div class="font-bold text-sm">Цель: ${currentItem.sets} × ${currentItem.reps}</div>
+
+        ${(ex && (ex.photo || ex.video)) ? `
+          <button onclick="syncWorkoutInputs(); state.workoutState.showExample = !state.workoutState.showExample; render();" class="w-full border border-gray-200 rounded-xl py-2.5 text-xs font-semibold flex items-center justify-center gap-1.5">
+            <span>▶</span> <span>${ws.showExample ? 'Скрыть пример' : 'Показать пример'}</span>
+          </button>
+          ${ws.showExample ? `
+            <div class="space-y-2 pt-1">
+              ${ex.photo ? `<img src="${ex.photo}" class="w-full h-40 object-cover rounded-xl">` : ''}
+              ${ex.video ? `<video src="${ex.video}" controls class="w-full h-40 rounded-xl bg-black"></video>` : ''}
+            </div>
+          ` : ''}
+        ` : ''}
+      </div>
+
+      <div class="card p-4 space-y-3">
+        <div class="text-xs font-semibold text-gray-400 uppercase">ОТМЕТКА О ВЫПОЛНЕНИИ</div>
+        <div class="grid grid-cols-3 gap-2.5">
+          <div>
+            <label class="text-xs text-gray-500 block mb-1">Подходов</label>
+            <input id="wo-sets" type="number" value="${ws.sets}" class="input-field">
+          </div>
+          <div>
+            <label class="text-xs text-gray-500 block mb-1">Раз</label>
+            <input id="wo-reps" type="number" value="${ws.reps}" class="input-field">
+          </div>
+          <div>
+            <label class="text-xs text-gray-500 block mb-1">Вес (кг)</label>
+            <input id="wo-weight" type="text" value="${ws.weight}" class="input-field">
+          </div>
+        </div>
+
+        <div>
+          <div class="text-xs font-semibold text-gray-400 uppercase mb-1.5">САМОЧУВСТВИЕ</div>
+          <div class="grid grid-cols-5 gap-1">
+            ${feelings.map(f => `
+              <button onclick="syncWorkoutInputs(); state.workoutState.feeling='${f}'; render();" class="py-2 rounded-lg text-[11px] font-medium border transition ${ws.feeling === f ? 'border-[#4a156b] bg-purple-50 brand-purple-text font-bold' : 'border-gray-200 text-gray-600 bg-white'}">
+                ${f}
+              </button>
+            `).join('')}
+          </div>
+        </div>
+
+        <div>
+          <label class="text-xs text-gray-500 block mb-1">Комментарий</label>
+          <input id="wo-comment" type="text" value="${ws.comment}" placeholder="Боль в плече, тянет поясницу..." class="input-field">
+        </div>
+      </div>
+
+      <button onclick="recordWorkoutStep('done')" class="w-full brand-purple text-white font-semibold py-3.5 rounded-xl flex items-center justify-center gap-2">
+        <span>✔</span> <span>Сделал — следующее</span>
+      </button>
+
+      <button onclick="syncWorkoutInputs(); state.modal='confirmSkipExercise'; render();" class="w-full text-center text-xs brand-purple-text font-medium py-2">
+        Не смог выполнить
+      </button>
+    </div>
+  `;
+}
+
+function renderScheduleList() {
+  if (!db.slots || db.slots.length === 0) {
+    return `<div class="card p-6 text-center text-xs text-gray-400">Слоты не созданы</div>`;
+  }
+  return `
+    <div class="space-y-4">
+      ${db.slots.map(day => `
+        <div>
+          <div class="text-xs font-semibold text-gray-400 uppercase mb-2">${day.dayLabel}</div>
+          <div class="card divide-y divide-gray-100">
+            ${day.hours.map(h => `
+              <div class="p-3.5 flex justify-between items-center">
+                <span class="font-semibold text-sm">${h.time}</span>
+                <div class="flex items-center gap-2">
+                  <span class="text-xs text-gray-400">${h.bookedPatientIds.length}/${h.capacity}</span>
+                  <span class="text-[11px] bg-green-50 text-green-600 font-medium px-2 py-0.5 rounded-md">Свободно</span>
+                </div>
+              </div>
+            `).join('')}
+          </div>
+        </div>
+      `).join('')}
+    </div>
+  `;
+}
+
+function renderProfileScreen(roleSubtitle, showPhone, assignedDoc = null) {
+  const u = state.currentUser;
+  return `
+    <div class="p-4 pt-6 space-y-4">
+      <div>
+        <h1 class="text-2xl font-bold">Профиль</h1>
+        <p class="text-xs text-gray-500">${u.email}</p>
+      </div>
+
+      <div class="card p-4 space-y-3">
+        <div class="text-xs text-gray-400 font-medium">${roleSubtitle}</div>
+        <div>
+          <label class="text-xs text-gray-600 block mb-1">Имя</label>
+          <input id="prof-name" type="text" value="${u.name || ''}" class="input-field">
+        </div>
+        ${showPhone ? `
+          <div>
+            <label class="text-xs text-gray-600 block mb-1">Телефон</label>
+            <input id="prof-phone" type="tel" value="${u.phone || ''}" placeholder="+7 ..." class="input-field">
+          </div>
+        ` : ''}
+        <button onclick="saveProfileChanges()" class="w-full brand-purple text-white font-semibold py-3 rounded-xl">
+          Сохранить в Supabase
+        </button>
+      </div>
+
+      ${assignedDoc ? `
+        <div class="card p-4">
+          <div class="text-[11px] font-semibold text-gray-400 uppercase">ВАШ ВРАЧ</div>
+          <div class="font-bold text-sm mt-0.5">${assignedDoc.name}</div>
+          <div class="text-xs text-gray-500">${assignedDoc.email}</div>
+        </div>
+      ` : ''}
+
+      <button onclick="state.modal='confirmLogout'; render();" class="card w-full p-4 text-red-500 font-semibold text-sm flex items-center justify-center gap-2">
+        <span>↪</span> <span>Выйти из аккаунта</span>
+      </button>
+    </div>
+  `;
+}
+
+function renderBottomNav(role) {
+  let tabs = [];
+  if (role === 'admin') {
+    tabs = [
+      { id: 'home', label: 'Главная', icon: ICONS.home },
+      { id: 'doctors', label: 'Врачи', icon: ICONS.medkit },
+      { id: 'patients', label: 'Пациенты', icon: ICONS.users },
+      { id: 'schedule', label: 'Расписание', icon: ICONS.calendar },
+      { id: 'profile', label: 'Профиль', icon: ICONS.gear }
+    ];
+  } else if (role === 'doctor') {
+    tabs = [
+      { id: 'patients', label: 'Пациенты', icon: ICONS.users },
+      { id: 'exercises', label: 'Упражнения', icon: ICONS.dumbbell },
+      { id: 'schedule', label: 'Расписание', icon: ICONS.calendar },
+      { id: 'profile', label: 'Профиль', icon: ICONS.user }
+    ];
+  } else {
+    tabs = [
+      { id: 'home', label: 'Главная', icon: ICONS.home },
+      { id: 'exercises', label: 'Упражнен...', icon: ICONS.dumbbell },
+      { id: 'schedule', label: 'Расписание', icon: ICONS.calendar },
+      { id: 'history', label: 'История', icon: ICONS.chart },
+      { id: 'profile', label: 'Профиль', icon: ICONS.user }
+    ];
+  }
+
+  return `
+    <nav class="bottom-nav">
+      ${tabs.map(t => {
+        const active = state.activeTab === t.id && !state.subScreen;
+        return `
+          <button onclick="state.subScreen=null; state.activeTab='${t.id}'; render();" class="flex flex-col items-center justify-center flex-1 ${active ? 'brand-purple-text font-semibold' : 'text-gray-400'}">
+            ${t.icon}
+            <span class="text-[10px] mt-1">${t.label}</span>
+          </button>
+        `;
+      }).join('')}
+    </nav>
+  `;
+}
+
+function renderModal() {
+  if (!state.modal) return '';
+
+  if (state.modal === 'configSupabase') {
+    return `
+      <div class="modal-backdrop" onclick="if(event.target===this){state.modal=null;render();}">
+        <div class="modal-sheet space-y-4">
+          <div class="flex justify-between items-center">
+            <h2 class="text-xl font-bold">Подключение к Supabase</h2>
+            <button onclick="state.modal=null; render();" class="text-gray-400 text-lg">✕</button>
+          </div>
+          <div class="card p-4 space-y-3">
+            <div>
+              <label class="text-xs text-gray-600 block mb-1">Project URL</label>
+              <input id="config-sb-url" type="text" value="${SUPABASE_URL}" placeholder="https://xyz.supabase.co" class="input-field font-mono text-xs">
+            </div>
+            <div>
+              <label class="text-xs text-gray-600 block mb-1">Anon / Public API Key</label>
+              <input id="config-sb-key" type="password" value="${SUPABASE_ANON_KEY}" placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." class="input-field font-mono text-xs">
+            </div>
+            <button onclick="saveSupabaseConfig()" class="w-full brand-purple text-white font-semibold py-3.5 rounded-xl">
+              Сохранить и подключиться
+            </button>
+          </div>
+          <p class="text-[11px] text-gray-400 leading-relaxed px-1">
+            Параметры берутся в панели Supabase: <b>Settings → API</b>. Ключи сохраняются локально в вашем браузере.
+          </p>
+        </div>
+      </div>
+    `;
+  }
+
+  if (state.modal === 'addDoctor') {
+    return `
+      <div class="modal-backdrop" onclick="if(event.target===this){state.modal=null;render();}">
+        <div class="modal-sheet space-y-4">
+          <button onclick="state.modal=null; render();" class="text-sm brand-purple-text font-medium">‹ Назад</button>
+          <h2 class="text-xl font-bold">Добавить Врача</h2>
+          <div class="card p-4 space-y-3">
+            <div>
+              <label class="text-xs text-gray-600 block mb-1">E-mail Врача</label>
+              <input id="modal-doc-email" type="email" placeholder="doctor@example.com" class="input-field">
+            </div>
+            <div>
+              <label class="text-xs text-gray-600 block mb-1">ФИО (необязательно)</label>
+              <input id="modal-doc-name" type="text" placeholder="Иванов И.И." class="input-field">
+            </div>
+            <button onclick="adminAddDoctor()" class="w-full brand-purple text-white font-semibold py-3.5 rounded-xl">
+              Добавить в базу
+            </button>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  if (state.modal === 'addPayment') {
+    return `
+      <div class="modal-backdrop" onclick="if(event.target===this){state.modal=null;render();}">
+        <div class="modal-sheet space-y-4">
+          <button onclick="state.modal=null; render();" class="text-sm brand-purple-text font-medium">‹ Назад</button>
+          <h2 class="text-xl font-bold">Добавить оплату</h2>
+          <div class="card p-4 space-y-3">
+            <div>
+              <label class="text-xs text-gray-600 block mb-1">Количество занятий</label>
+              <input id="pay-lessons" type="number" value="12" class="input-field">
+            </div>
+            <div>
+              <label class="text-xs text-gray-600 block mb-1">Сумма (₽, необязательно)</label>
+              <input id="pay-amount" type="number" placeholder="1000" class="input-field">
+            </div>
+            <div>
+              <label class="text-xs text-gray-600 block mb-1">Примечание</label>
+              <input id="pay-note" type="text" placeholder="Например: оплата на месяц" class="input-field">
+            </div>
+            <button onclick="adminAddPayment()" class="w-full brand-purple text-white font-semibold py-3.5 rounded-xl">
+              Сохранить оплату
+            </button>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  if (state.modal === 'bookSlot') {
+    const hasSlots = db.slots && db.slots.length > 0;
+    return `
+      <div class="modal-backdrop" onclick="if(event.target===this){state.modal=null;render();}">
+        <div class="modal-sheet space-y-4">
+          <button onclick="state.modal=null; render();" class="text-sm brand-purple-text font-medium">‹ Назад</button>
+          <h2 class="text-xl font-bold">Выберите время</h2>
+          ${!hasSlots ? `
+            <div class="card p-6 text-center text-xs text-gray-500">
+              Администратор ещё не сформировал слоты в расписании.
+            </div>
+          ` : `
+            <div class="space-y-3 max-h-80 overflow-y-auto">
+              ${db.slots.slice(0, 3).map(day => `
+                <div>
+                  <div class="text-xs font-bold text-gray-400 mb-1.5">${day.dayLabel}</div>
+                  <div class="grid grid-cols-3 gap-2">
+                    ${day.hours.map(h => `
+                      <button onclick="patientBookSlot('${day.dayLabel}', '${h.time}')" class="card py-2.5 text-xs font-semibold hover:border-[#4a156b]">
+                        ${h.time}
+                      </button>
+                    `).join('')}
+                  </div>
+                </div>
+              `).join('')}
+            </div>
+          `}
+        </div>
+      </div>
+    `;
+  }
+
+  if (state.modal === 'confirmLogout') {
+    return `
+      <div class="modal-backdrop items-center">
+        <div class="dialog-box space-y-3">
+          <div class="font-bold text-base">Выйти?</div>
+          <p class="text-xs text-gray-500">Вы сможете войти снова по e-mail.</p>
+          <div class="grid grid-cols-2 gap-2 pt-2">
+            <button onclick="state.modal=null; render();" class="py-2.5 rounded-xl bg-gray-200 font-semibold text-sm">
+              Отмена
+            </button>
+            <button onclick="state.currentUser=null; state.authStep='email'; state.modal=null; render();" class="py-2.5 rounded-xl bg-red-100 text-red-600 font-semibold text-sm">
+              Выйти
+            </button>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  if (state.modal === 'confirmSkipExercise') {
+    return `
+      <div class="modal-backdrop items-center">
+        <div class="dialog-box space-y-3">
+          <div class="font-bold text-base">Пропустить?</div>
+          <p class="text-xs text-gray-500">Упражнение будет помечено как невыполненное.</p>
+          <div class="grid grid-cols-2 gap-2 pt-2">
+            <button onclick="state.modal=null; render();" class="py-2.5 rounded-xl bg-gray-200 font-semibold text-sm">
+              Отмена
+            </button>
+            <button onclick="recordWorkoutStep('skipped')" class="py-2.5 rounded-xl bg-red-100 text-red-600 font-semibold text-sm">
+              Пропустить
+            </button>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  if (state.modal === 'workoutFinished') {
+    return `
+      <div class="modal-backdrop items-center">
+        <div class="dialog-box space-y-3">
+          <div class="font-bold text-base">Тренировка завершена</div>
+          <p class="text-xs text-gray-500">Все упражнения записаны в Supabase</p>
+          <button onclick="state.modal=null; state.subScreen=null; state.activeTab='history'; render();" class="w-full py-2.5 rounded-xl bg-gray-200 font-semibold text-sm mt-2">
+            ОК
+          </button>
+        </div>
+      </div>
+    `;
+  }
+
+  return '';
+}
+
+// Первоначальная загрузка
+if (supabase) {
+  fetchCloudData();
+  initRealtimeSubscription();
+} else {
+  render();
+}
+</script>
+</body>
+</html>
