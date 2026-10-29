@@ -7,8 +7,8 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <title>Центр Бубновского — ЛФК</title>
   <script src="https://cdn.tailwindcss.com"></script>
-  <!-- Официальная библиотека Supabase JS SDK -->
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <!-- Официальная браузерная UMD-сборка Supabase JS -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
   <style>
     * { -webkit-tap-highlight-color: transparent; box-sizing: border-box; }
     body {
@@ -103,27 +103,35 @@
 </head>
 <body>
 
-<div id="app-container">
-  <!-- Начальная заглушка на случай медленной загрузки скриптов -->
-  <div class="min-h-screen flex items-center justify-center text-gray-400 text-sm">
-    Загрузка приложения...
-  </div>
-</div>
+<div id="app-container"></div>
 
 <script>
+window.onerror = function(msg, url, line) {
+  var box = document.getElementById('app-container');
+  if (box) {
+    box.innerHTML = '<div style="padding:24px; color:#b91c1c; font-family:sans-serif;">' +
+      '<h2 style="font-weight:bold; font-size:18px; margin-bottom:8px;">Ошибка скрипта</h2>' +
+      '<p style="font-size:14px; background:#fee2e2; padding:12px; border-radius:8px;">' + msg + '<br><small>Строка: ' + line + '</small></p>' +
+      '</div>';
+  }
+  return false;
+};
+
 // ==========================================
-// 1. ИНИЦИАЛИЗАЦИЯ ПОДКЛЮЧЕНИЯ К SUPABASE
+// 1. ИНИЦИАЛИЗАЦИЯ SUPABASE
 // ==========================================
-// Если вы хотите сразу зашить ключи в проект, замените пустые кавычки на ваши реальные значения:
-let SUPABASE_URL = localStorage.getItem('lfk_supabase_url') || '';
-let SUPABASE_ANON_KEY = localStorage.getItem('lfk_supabase_key') || '';
-let supabase = null;
+var SUPABASE_URL = localStorage.getItem('lfk_supabase_url') || '';
+var SUPABASE_ANON_KEY = localStorage.getItem('lfk_supabase_key') || '';
+var supabase = null;
 
 function initSupabaseClient() {
-  if (SUPABASE_URL && SUPABASE_ANON_KEY && window.supabase) {
+  if (SUPABASE_URL && SUPABASE_ANON_KEY) {
     try {
-      supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-      return true;
+      var sbLib = window.supabase || (window.supabaseJs && window.supabaseJs.supabase);
+      if (sbLib && sbLib.createClient) {
+        supabase = sbLib.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+        return true;
+      }
     } catch (e) {
       console.error('Ошибка инициализации Supabase:', e);
     }
@@ -133,8 +141,8 @@ function initSupabaseClient() {
 
 initSupabaseClient();
 
-// Локальный кэш данных приложения
-let db = {
+// Локальная база (демо-данные на случай отсутствия ключей)
+var db = {
   users: [
     { id: '11111111-1111-1111-1111-111111111111', email: 'requital@yahoo.com', role: 'admin', name: 'Дмитрий', phone: '+7 900 000-00-00' },
     { id: '22222222-2222-2222-2222-222222222222', email: 'doc1@aol.com', role: 'doctor', name: 'Пробкин', phone: '', logged_in: false },
@@ -157,7 +165,7 @@ let db = {
   slotSettings: { fromHour: 8, toHour: 20, capPerHour: 4, daysCount: 7 }
 };
 
-let state = {
+var state = {
   currentUser: null,
   authStep: 'email',
   authEmail: '',
@@ -165,7 +173,6 @@ let state = {
   authCodeInput: '',
   authNameInput: '',
   authIsNewUser: false,
-  isLoading: false,
 
   activeTab: 'home',
   doctorPatientsFilter: 'mine',
@@ -193,12 +200,7 @@ let state = {
 // 2. СИНХРОНИЗАЦИЯ С ОБЛАКОМ
 // ==========================================
 async function fetchCloudData() {
-  if (!supabase) {
-    render();
-    return;
-  }
-  state.isLoading = true;
-  render();
+  if (!supabase) return;
 
   try {
     const [profilesRes, exercisesRes, prescRes, historyRes, paymentsRes, slotsRes] = await Promise.all([
@@ -210,20 +212,16 @@ async function fetchCloudData() {
       supabase.from('schedule_slots').select('*').order('day_index', { ascending: true })
     ]);
 
-    if (profilesRes.data && profilesRes.data.length > 0) db.users = profilesRes.data;
-    if (exercisesRes.data && exercisesRes.data.length > 0) {
-      db.exercises = exercisesRes.data.map(e => ({
-        id: e.id,
-        title: e.title,
-        description: e.description,
-        photo: e.photo_url,
-        video: e.video_url
-      }));
+    if (profilesRes && profilesRes.data && profilesRes.data.length > 0) db.users = profilesRes.data;
+    if (exercisesRes && exercisesRes.data && exercisesRes.data.length > 0) {
+      db.exercises = exercisesRes.data.map(function(e) {
+        return { id: e.id, title: e.title, description: e.description, photo: e.photo_url, video: e.video_url };
+      });
     }
 
-    if (prescRes.data && prescRes.data.length > 0) {
+    if (prescRes && prescRes.data && prescRes.data.length > 0) {
       db.prescriptions = {};
-      prescRes.data.forEach(p => {
+      prescRes.data.forEach(function(p) {
         if (!db.prescriptions[p.patient_id]) db.prescriptions[p.patient_id] = [];
         db.prescriptions[p.patient_id].push({
           id: p.id,
@@ -235,37 +233,41 @@ async function fetchCloudData() {
       });
     }
 
-    if (historyRes.data) {
-      db.history = historyRes.data.map(h => ({
-        id: h.id,
-        patientId: h.patient_id,
-        exerciseId: h.exercise_id,
-        exerciseTitle: h.exercise_title,
-        date: h.date_label,
-        dateLabel: h.date_label,
-        sets: h.sets,
-        reps: h.reps,
-        weight: h.weight,
-        feeling: h.feeling,
-        comment: h.comment,
-        status: h.status
-      }));
+    if (historyRes && historyRes.data) {
+      db.history = historyRes.data.map(function(h) {
+        return {
+          id: h.id,
+          patientId: h.patient_id,
+          exerciseId: h.exercise_id,
+          exerciseTitle: h.exercise_title,
+          date: h.date_label,
+          dateLabel: h.date_label,
+          sets: h.sets,
+          reps: h.reps,
+          weight: h.weight,
+          feeling: h.feeling,
+          comment: h.comment,
+          status: h.status
+        };
+      });
     }
 
-    if (paymentsRes.data) {
-      db.payments = paymentsRes.data.map(p => ({
-        id: p.id,
-        patientId: p.patient_id,
-        lessons: p.lessons,
-        amount: p.amount,
-        date: p.payment_date,
-        note: p.note
-      }));
+    if (paymentsRes && paymentsRes.data) {
+      db.payments = paymentsRes.data.map(function(p) {
+        return {
+          id: p.id,
+          patientId: p.patient_id,
+          lessons: p.lessons,
+          amount: p.amount,
+          date: p.payment_date,
+          note: p.note
+        };
+      });
     }
 
-    if (slotsRes.data && slotsRes.data.length > 0) {
+    if (slotsRes && slotsRes.data && slotsRes.data.length > 0) {
       const grouped = {};
-      slotsRes.data.forEach(s => {
+      slotsRes.data.forEach(function(s) {
         if (!grouped[s.day_index]) {
           grouped[s.day_index] = { dayIndex: s.day_index, dayLabel: s.day_label, hours: [] };
         }
@@ -276,17 +278,16 @@ async function fetchCloudData() {
           bookedPatientIds: s.booked_patient_ids || []
         });
       });
-      db.slots = Object.values(grouped).sort((a,b) => a.dayIndex - b.dayIndex);
+      db.slots = Object.values(grouped).sort(function(a,b) { return a.dayIndex - b.dayIndex; });
     }
 
     if (state.currentUser) {
-      const updated = db.users.find(u => u.id === state.currentUser.id);
+      const updated = db.users.find(function(u) { return u.id === state.currentUser.id; });
       if (updated) state.currentUser = updated;
     }
   } catch (err) {
     console.error('Ошибка загрузки данных из облака:', err);
   } finally {
-    state.isLoading = false;
     render();
   }
 }
@@ -296,7 +297,7 @@ function initRealtimeSubscription() {
   try {
     supabase
       .channel('lfk_realtime_changes')
-      .on('postgres_changes', { event: '*', schema: 'public' }, () => {
+      .on('postgres_changes', { event: '*', schema: 'public' }, function() {
         fetchCloudData();
       })
       .subscribe();
@@ -306,10 +307,10 @@ function initRealtimeSubscription() {
 }
 
 function saveSupabaseConfig() {
-  const urlEl = document.getElementById('config-sb-url');
-  const keyEl = document.getElementById('config-sb-key');
-  const url = urlEl ? urlEl.value.trim() : '';
-  const key = keyEl ? keyEl.value.trim() : '';
+  var urlEl = document.getElementById('config-sb-url');
+  var keyEl = document.getElementById('config-sb-key');
+  var url = urlEl ? urlEl.value.trim() : '';
+  var key = keyEl ? keyEl.value.trim() : '';
 
   if (!url || !key) {
     alert('Пожалуйста, укажите URL и Anon Key проекта Supabase');
@@ -331,25 +332,25 @@ function saveSupabaseConfig() {
 // 3. ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ И ИКОНКИ
 // ==========================================
 function getDoctorById(id) {
-  return db.users.find(u => u.id === id && u.role === 'doctor');
+  return db.users.find(function(u) { return u.id === id && u.role === 'doctor'; });
 }
 function getPatientById(id) {
-  return db.users.find(u => u.id === id && u.role === 'patient');
+  return db.users.find(function(u) { return u.id === id && u.role === 'patient'; });
 }
 function getExerciseById(id) {
-  return db.exercises.find(e => e.id === id);
+  return db.exercises.find(function(e) { return e.id === id; });
 }
 
-const ICONS = {
-  home: `<svg class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24"><path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/></svg>`,
-  medkit: `<svg class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24"><path d="M20 6h-4V4c0-1.1-.9-2-2-2h-4c-1.1 0-2 .9-2 2v2H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zM10 4h4v2h-4V4zm6 11h-3v3h-2v-3H8v-2h3v-3h2v3h3v2z"/></svg>`,
-  users: `<svg class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24"><path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>`,
-  calendar: `<svg class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24"><path d="M19 4h-1V2h-2v2H8V2H6v2H5c-1.11 0-1.99.9-1.99 2L3 20a2 2 0 0 0 2 2h14c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 16H5V10h14v10zm0-12H5V6h14v2z"/></svg>`,
-  gear: `<svg class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.488.488 0 0 0-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.484.484 0 0 0-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>`,
-  dumbbell: `<svg class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 10l6-6m10 10l-6 6M7 7l10 10M3 7l4-4m14 14l-4 4"/></svg>`,
-  chart: `<svg class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24"><path d="M5 9.2h3V19H5V9.2zM10.6 5h2.8v14h-2.8V5zm5.6 8H19v6h-2.8v-6z"/></svg>`,
-  user: `<svg class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>`,
-  trash: `<svg class="w-5 h-5 text-red-500" fill="currentColor" viewBox="0 0 24 24"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>`
+var ICONS = {
+  home: '<svg class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24"><path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/></svg>',
+  medkit: '<svg class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24"><path d="M20 6h-4V4c0-1.1-.9-2-2-2h-4c-1.1 0-2 .9-2 2v2H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zM10 4h4v2h-4V4zm6 11h-3v3h-2v-3H8v-2h3v-3h2v3h3v2z"/></svg>',
+  users: '<svg class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24"><path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>',
+  calendar: '<svg class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24"><path d="M19 4h-1V2h-2v2H8V2H6v2H5c-1.11 0-1.99.9-1.99 2L3 20a2 2 0 0 0 2 2h14c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 16H5V10h14v10zm0-12H5V6h14v2z"/></svg>',
+  gear: '<svg class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.488.488 0 0 0-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.484.484 0 0 0-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>',
+  dumbbell: '<svg class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 10l6-6m10 10l-6 6M7 7l10 10M3 7l4-4m14 14l-4 4"/></svg>',
+  chart: '<svg class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24"><path d="M5 9.2h3V19H5V9.2zM10.6 5h2.8v14h-2.8V5zm5.6 8H19v6h-2.8v-6z"/></svg>',
+  user: '<svg class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>',
+  trash: '<svg class="w-5 h-5 text-red-500" fill="currentColor" viewBox="0 0 24 24"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>'
 };
 
 // ==========================================
@@ -361,7 +362,7 @@ function requestCode() {
     alert('Пожалуйста, введите корректный E-mail');
     return;
   }
-  const existing = db.users.find(u => u.email.toLowerCase() === email);
+  const existing = db.users.find(function(u) { return u.email.toLowerCase() === email; });
   state.authIsNewUser = !existing;
   state.authGeneratedCode = String(Math.floor(100000 + Math.random() * 900000));
   state.authCodeInput = state.authGeneratedCode;
@@ -376,14 +377,14 @@ async function verifyCodeAndLogin() {
     return;
   }
   const email = state.authEmail.trim().toLowerCase();
-  let user = db.users.find(u => u.email.toLowerCase() === email);
+  let user = db.users.find(function(u) { return u.email.toLowerCase() === email; });
 
   if (!user && supabase) {
     const name = state.authNameInput.trim() || email.split('@')[0];
     const { data, error } = await supabase.from('profiles').insert([{
-      email,
+      email: email,
       role: 'patient',
-      name,
+      name: name,
       phone: '',
       balance: 0
     }]).select().single();
@@ -397,7 +398,7 @@ async function verifyCodeAndLogin() {
   } else if (!user) {
     user = {
       id: 'local_' + Date.now(),
-      email,
+      email: email,
       role: 'patient',
       name: state.authNameInput.trim() || email.split('@')[0],
       phone: '',
@@ -423,7 +424,7 @@ function loginAsUser(user) {
 }
 
 function quickLogin(email) {
-  const user = db.users.find(u => u.email.toLowerCase() === email.toLowerCase());
+  const user = db.users.find(function(u) { return u.email.toLowerCase() === email.toLowerCase(); });
   if (user) loginAsUser(user);
   else alert('Пользователь не найден в базе данных');
 }
@@ -441,14 +442,14 @@ async function adminAddDoctor() {
     alert('Введите корректный E-mail врача');
     return;
   }
-  if (db.users.some(u => u.email.toLowerCase() === email)) {
+  if (db.users.some(function(u) { return u.email.toLowerCase() === email; })) {
     alert('Пользователь с таким E-mail уже существует');
     return;
   }
 
   const docData = {
     id: 'doc_' + Date.now(),
-    email,
+    email: email,
     role: 'doctor',
     name: name || email.split('@')[0],
     phone: '',
@@ -457,7 +458,7 @@ async function adminAddDoctor() {
 
   if (supabase) {
     const { data, error } = await supabase.from('profiles').insert([{
-      email,
+      email: email,
       role: 'doctor',
       name: name || email.split('@')[0],
       phone: '',
@@ -477,7 +478,7 @@ async function adminDeleteDoctor(docId) {
   if (supabase) {
     await supabase.from('profiles').delete().eq('id', docId);
   }
-  db.users = db.users.filter(u => u.id !== docId);
+  db.users = db.users.filter(function(u) { return u.id !== docId; });
   render();
 }
 
@@ -498,9 +499,9 @@ async function adminAddPayment() {
   if (supabase) {
     const { data } = await supabase.from('payments').insert([{
       patient_id: pat.id,
-      lessons,
-      amount,
-      note,
+      lessons: lessons,
+      amount: amount,
+      note: note,
       payment_date: new Date().toISOString().split('T')[0]
     }]).select().single();
 
@@ -510,9 +511,9 @@ async function adminAddPayment() {
     db.payments.unshift({
       id: 'pay_' + Date.now(),
       patientId: pat.id,
-      lessons,
-      amount,
-      note,
+      lessons: lessons,
+      amount: amount,
+      note: note,
       date: new Date().toLocaleDateString('ru-RU')
     });
   }
@@ -535,7 +536,7 @@ async function generateScheduleSlots() {
   for (let d = 0; d < days; d++) {
     const dt = new Date(baseDate);
     dt.setDate(baseDate.getDate() + d);
-    let dayLabel = `${dt.getDate()} ${monthsGen[dt.getMonth()]}`;
+    let dayLabel = dt.getDate() + ' ' + monthsGen[dt.getMonth()];
     if (d === 0) dayLabel = 'СЕГОДНЯ';
     else if (d === 1) dayLabel = 'ЗАВТРА';
 
@@ -557,7 +558,7 @@ async function generateScheduleSlots() {
     await fetchCloudData();
   } else {
     const grouped = {};
-    insertPayload.forEach((s, idx) => {
+    insertPayload.forEach(function(s, idx) {
       if (!grouped[s.day_index]) {
         grouped[s.day_index] = { dayIndex: s.day_index, dayLabel: s.day_label, hours: [] };
       }
@@ -598,10 +599,10 @@ function openEditPrescriptions(patId) {
 }
 
 function syncPrescriptionInputsFromDOM() {
-  state.tempPrescriptions.forEach((item, idx) => {
-    const sEl = document.getElementById(`presc-sets-${idx}`);
-    const rEl = document.getElementById(`presc-reps-${idx}`);
-    const nEl = document.getElementById(`presc-note-${idx}`);
+  state.tempPrescriptions.forEach(function(item, idx) {
+    const sEl = document.getElementById('presc-sets-' + idx);
+    const rEl = document.getElementById('presc-reps-' + idx);
+    const nEl = document.getElementById('presc-note-' + idx);
     if (sEl) item.sets = parseInt(sEl.value, 10) || 1;
     if (rEl) item.reps = parseInt(rEl.value, 10) || 10;
     if (nEl) item.note = nEl.value;
@@ -636,14 +637,16 @@ async function savePrescriptions() {
 
   if (supabase) {
     await supabase.from('prescriptions').delete().eq('patient_id', patId);
-    const payload = state.tempPrescriptions.map((p, idx) => ({
-      patient_id: patId,
-      exercise_id: p.exerciseId,
-      sets: p.sets,
-      reps: p.reps,
-      note: p.note,
-      sort_order: idx
-    }));
+    const payload = state.tempPrescriptions.map(function(p, idx) {
+      return {
+        patient_id: patId,
+        exercise_id: p.exerciseId,
+        sets: p.sets,
+        reps: p.reps,
+        note: p.note,
+        sort_order: idx
+      };
+    });
     if (payload.length > 0) {
       await supabase.from('prescriptions').insert(payload);
     }
@@ -655,10 +658,10 @@ async function savePrescriptions() {
   render();
 }
 
-function openExerciseForm(exId = null) {
+function openExerciseForm(exId) {
   if (exId) {
     const ex = getExerciseById(exId);
-    state.exerciseFormDraft = { ...ex };
+    state.exerciseFormDraft = Object.assign({}, ex);
   } else {
     state.exerciseFormDraft = { id: null, title: '', description: '', photo: '', video: '' };
   }
@@ -677,7 +680,7 @@ async function handleFileUpload(inputEl, type) {
 
   if (!supabase) {
     const reader = new FileReader();
-    reader.onload = (e) => {
+    reader.onload = function(e) {
       if (type === 'photo') state.exerciseFormDraft.photo = e.target.result;
       if (type === 'video') state.exerciseFormDraft.video = e.target.result;
       render();
@@ -688,7 +691,7 @@ async function handleFileUpload(inputEl, type) {
 
   try {
     const ext = file.name.split('.').pop();
-    const filePath = `${type}s/${Date.now()}_${Math.random().toString(36).substring(2,7)}.${ext}`;
+    const filePath = type + 's/' + Date.now() + '_' + Math.random().toString(36).substring(2,7) + '.' + ext;
     const { error: uploadError } = await supabase.storage.from('exercise-media').upload(filePath, file);
 
     if (uploadError) {
@@ -713,8 +716,8 @@ async function saveExerciseForm() {
   }
 
   const payload = {
-    title,
-    description,
+    title: title,
+    description: description,
     photo_url: state.exerciseFormDraft.photo || '',
     video_url: state.exerciseFormDraft.video || ''
   };
@@ -741,8 +744,8 @@ async function saveExerciseForm() {
     } else {
       db.exercises.push({
         id: 'ex_' + Date.now(),
-        title,
-        description,
+        title: title,
+        description: description,
         photo: state.exerciseFormDraft.photo,
         video: state.exerciseFormDraft.video
       });
@@ -757,7 +760,7 @@ async function deleteExercise(exId) {
     await supabase.from('exercises').delete().eq('id', exId);
     await fetchCloudData();
   } else {
-    db.exercises = db.exercises.filter(e => e.id !== exId);
+    db.exercises = db.exercises.filter(function(e) { return e.id !== exId; });
   }
   state.subScreen = null;
   render();
@@ -815,7 +818,7 @@ async function recordWorkoutStep(status) {
     weight: state.workoutState.weight,
     feeling: state.workoutState.feeling,
     comment: status === 'skipped' ? 'Не выполнено' : state.workoutState.comment,
-    status
+    status: status
   };
 
   if (supabase) {
@@ -834,7 +837,7 @@ async function recordWorkoutStep(status) {
       weight: state.workoutState.weight,
       feeling: state.workoutState.feeling,
       comment: status === 'skipped' ? 'Не выполнено' : state.workoutState.comment,
-      status
+      status: status
     });
   }
 
@@ -864,7 +867,7 @@ async function patientBookSlot(dayLabel, timeStr) {
     alert('У вас нет оплаченных занятий. Обратитесь к Администратору.');
     return;
   }
-  const bookedStr = `${dayLabel}, ${timeStr}`;
+  const bookedStr = dayLabel + ', ' + timeStr;
   const newBalance = Math.max(0, (pat.balance || 0) - 1);
 
   if (supabase) {
@@ -888,7 +891,7 @@ async function saveProfileChanges() {
   const phone = phoneEl ? phoneEl.value.trim() : '';
 
   if (supabase) {
-    await supabase.from('profiles').update({ name, phone }).eq('id', state.currentUser.id);
+    await supabase.from('profiles').update({ name: name, phone: phone }).eq('id', state.currentUser.id);
   }
   state.currentUser.name = name;
   state.currentUser.phone = phone;
@@ -900,7 +903,7 @@ async function saveProfileChanges() {
 // 8. ГЕНЕРАЦИЯ HTML-ЭКРАНОВ
 // ==========================================
 function render() {
-  const container = document.getElementById('app-container');
+  var container = document.getElementById('app-container');
   if (!container) return;
 
   if (!state.currentUser) {
@@ -908,8 +911,8 @@ function render() {
     return;
   }
 
-  let contentHtml = '';
-  const role = state.currentUser.role;
+  var contentHtml = '';
+  var role = state.currentUser.role;
 
   if (state.subScreen === 'patientDetail') contentHtml = renderPatientDetailScreen();
   else if (state.subScreen === 'patientHistory') contentHtml = renderPatientHistoryScreen();
@@ -923,14 +926,14 @@ function render() {
     else contentHtml = renderPatientTabs();
   }
 
-  const navHtml = state.subScreen === 'workoutSession' ? '' : renderBottomNav(role);
-  const modalHtml = renderModal();
+  var navHtml = state.subScreen === 'workoutSession' ? '' : renderBottomNav(role);
+  var modalHtml = renderModal();
 
   container.innerHTML = contentHtml + navHtml + modalHtml;
 }
 
 function renderAuthScreen() {
-  const isConnected = !!supabase;
+  var isConnected = !!supabase;
   return `
     <div class="min-h-screen flex flex-col justify-between px-6 pt-10 pb-8 bg-[#f7f7f9]">
       <div>
@@ -1022,8 +1025,8 @@ function renderAuthScreen() {
 }
 
 function renderAdminTabs() {
-  const doctors = db.users.filter(u => u.role === 'doctor');
-  const patients = db.users.filter(u => u.role === 'patient');
+  const doctors = db.users.filter(function(u) { return u.role === 'doctor'; });
+  const patients = db.users.filter(function(u) { return u.role === 'patient'; });
 
   if (state.activeTab === 'home') {
     return `
@@ -1078,8 +1081,8 @@ function renderAdminTabs() {
         </div>
 
         <div class="space-y-2.5">
-          ${doctors.map(doc => {
-            const patCount = patients.filter(p => p.doctor_id === doc.id).length;
+          ${doctors.map(function(doc) {
+            const patCount = patients.filter(function(p) { return p.doctor_id === doc.id; }).length;
             return `
               <div class="card p-4 flex justify-between items-center">
                 <div class="flex items-center gap-3">
@@ -1115,7 +1118,7 @@ function renderAdminTabs() {
         </div>
 
         <div class="space-y-2.5">
-          ${patients.map(pat => {
+          ${patients.map(function(pat) {
             const doc = getDoctorById(pat.doctor_id);
             const firstLetter = (pat.name || 'П')[0].toUpperCase();
             return `
@@ -1188,9 +1191,9 @@ function renderAdminTabs() {
 }
 
 function renderDoctorTabs() {
-  const patients = db.users.filter(u => u.role === 'patient');
-  const myPatients = patients.filter(p => p.doctor_id === state.currentUser.id);
-  const freePatients = patients.filter(p => !p.doctor_id);
+  const patients = db.users.filter(function(u) { return u.role === 'patient'; });
+  const myPatients = patients.filter(function(p) { return p.doctor_id === state.currentUser.id; });
+  const freePatients = patients.filter(function(p) { return !p.doctor_id; });
 
   if (state.activeTab === 'patients') {
     const listToShow = state.doctorPatientsFilter === 'mine' ? myPatients : freePatients;
@@ -1218,7 +1221,7 @@ function renderDoctorTabs() {
           </div>
         ` : `
           <div class="space-y-2.5">
-            ${listToShow.map(pat => {
+            ${listToShow.map(function(pat) {
               const firstLetter = (pat.name || 'П')[0].toUpperCase();
               return `
                 <div class="card p-4 flex justify-between items-center">
@@ -1259,24 +1262,26 @@ function renderDoctorTabs() {
         </div>
 
         <div class="space-y-2.5">
-          ${db.exercises.map(ex => `
-            <div onclick="state.selectedExerciseId='${ex.id}'; state.subScreen='exerciseDetail'; render();" class="card p-4 flex justify-between items-center cursor-pointer active:bg-gray-50">
-              <div class="flex items-center gap-3">
-                <div class="brand-purple-text">${ICONS.dumbbell}</div>
-                <div>
-                  <div class="font-bold text-sm">${ex.title}</div>
-                  <div class="text-xs text-gray-400 mt-0.5">${ex.description || 'Без описания'}</div>
-                  ${(ex.photo || ex.video) ? `
-                    <div class="flex items-center gap-2.5 mt-1 text-[11px] text-gray-500">
-                      ${ex.photo ? `<span>🖼 фото</span>` : ''}
-                      ${ex.video ? `<span>📹 видео</span>` : ''}
-                    </div>
-                  ` : ''}
+          ${db.exercises.map(function(ex) {
+            return `
+              <div onclick="state.selectedExerciseId='${ex.id}'; state.subScreen='exerciseDetail'; render();" class="card p-4 flex justify-between items-center cursor-pointer active:bg-gray-50">
+                <div class="flex items-center gap-3">
+                  <div class="brand-purple-text">${ICONS.dumbbell}</div>
+                  <div>
+                    <div class="font-bold text-sm">${ex.title}</div>
+                    <div class="text-xs text-gray-400 mt-0.5">${ex.description || 'Без описания'}</div>
+                    ${(ex.photo || ex.video) ? `
+                      <div class="flex items-center gap-2.5 mt-1 text-[11px] text-gray-500">
+                        ${ex.photo ? '<span>🖼 фото</span>' : ''}
+                        ${ex.video ? '<span>📹 видео</span>' : ''}
+                      </div>
+                    ` : ''}
+                  </div>
                 </div>
+                <span class="text-gray-400 text-lg">›</span>
               </div>
-              <span class="text-gray-400 text-lg">›</span>
-            </div>
-          `).join('')}
+            `;
+          }).join('')}
         </div>
       </div>
     `;
@@ -1301,7 +1306,7 @@ function renderPatientTabs() {
   const pat = state.currentUser;
   const doc = getDoctorById(pat.doctor_id);
   const presc = db.prescriptions[pat.id] || [];
-  const patHistory = db.history.filter(h => h.patientId === pat.id);
+  const patHistory = db.history.filter(function(h) { return h.patientId === pat.id; });
 
   if (state.activeTab === 'home') {
     return `
@@ -1315,7 +1320,7 @@ function renderPatientTabs() {
           <div>
             <div class="text-[11px] font-semibold text-gray-400 uppercase">ОПЛАЧЕНО ЗАНЯТИЙ</div>
             <div class="text-3xl font-bold mt-1">${pat.balance || 0}</div>
-            ${(pat.balance || 0) === 0 ? `<div class="text-[11px] text-red-500 mt-1">У вас не осталось оплаченных занятий. Обратитесь к Администратору.</div>` : ''}
+            ${(pat.balance || 0) === 0 ? '<div class="text-[11px] text-red-500 mt-1">У вас не осталось оплаченных занятий. Обратитесь к Администратору.</div>' : ''}
           </div>
           <div class="w-11 h-11 rounded-xl brand-purple text-white flex items-center justify-center">
             <svg class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24"><path d="M20 4H4c-1.11 0-1.99.89-1.99 2L2 18c0 1.11.89 2 2 2h16c1.11 0 2-.89 2-2V6c0-1.11-.89-2-2-2zm0 14H4v-6h16v6zm0-10H4V6h16v2z"/></svg>
@@ -1339,7 +1344,7 @@ function renderPatientTabs() {
             <button onclick="state.activeTab='schedule'; render();" class="text-xs brand-purple-text font-medium">Все</button>
           </div>
           <div onclick="state.activeTab='schedule'; render();" class="card p-3.5 text-sm font-medium cursor-pointer flex justify-between items-center">
-            <span>${pat.booked_slot ? `Запись: <b>${pat.booked_slot}</b>` : 'У вас нет записи. <b>Записаться →</b>'}</span>
+            <span>${pat.booked_slot ? 'Запись: <b>' + pat.booked_slot + '</b>' : 'У вас нет записи. <b>Записаться →</b>'}</span>
           </div>
         </div>
 
@@ -1356,7 +1361,7 @@ function renderPatientTabs() {
             </div>
           ` : `
             <div class="space-y-2">
-              ${presc.map((item, i) => {
+              ${presc.map(function(item, i) {
                 const ex = getExerciseById(item.exerciseId);
                 return `
                   <div onclick="state.selectedExerciseId='${item.exerciseId}'; state.subScreen='exerciseDetail'; render();" class="card p-3.5 flex justify-between items-center cursor-pointer">
@@ -1390,7 +1395,7 @@ function renderPatientTabs() {
         </div>
 
         <div class="space-y-2.5">
-          ${presc.map((item, i) => {
+          ${presc.map(function(item, i) {
             const ex = getExerciseById(item.exerciseId);
             return `
               <div onclick="state.selectedExerciseId='${item.exerciseId}'; state.subScreen='exerciseDetail'; render();" class="card p-4 flex justify-between items-center cursor-pointer">
@@ -1439,7 +1444,7 @@ function renderPatientTabs() {
                 <div class="font-bold text-sm">${pat.booked_slot}</div>
                 <div class="text-xs text-green-600 mt-0.5">Запись подтверждена</div>
               </div>
-              <button onclick="if(supabase){supabase.from('profiles').update({booked_slot: null, balance: (pat.balance||0)+1}).eq('id', '${pat.id}').then(()=>fetchCloudData());} else {pat.booked_slot=null; pat.balance=(pat.balance||0)+1; render();}" class="text-xs text-red-500 font-medium">
+              <button onclick="if(supabase){supabase.from('profiles').update({booked_slot: null, balance: (pat.balance||0)+1}).eq('id', '${pat.id}').then(function(){fetchCloudData();});} else {pat.booked_slot=null; pat.balance=(pat.balance||0)+1; render();}" class="text-xs text-red-500 font-medium">
                 Отменить
               </button>
             </div>
@@ -1463,23 +1468,25 @@ function renderPatientTabs() {
         </div>
 
         <div class="space-y-2.5">
-          ${patHistory.map(h => `
-            <div class="card p-4 flex justify-between items-center">
-              <div>
-                <div class="font-bold text-sm">${h.exerciseTitle}</div>
-                <div class="text-xs text-gray-500 mt-0.5">
-                  ${h.status === 'skipped' ? 'Не выполнено' : `${h.sets} × ${h.reps}`}
+          ${patHistory.map(function(h) {
+            return `
+              <div class="card p-4 flex justify-between items-center">
+                <div>
+                  <div class="font-bold text-sm">${h.exerciseTitle}</div>
+                  <div class="text-xs text-gray-500 mt-0.5">
+                    ${h.status === 'skipped' ? 'Не выполнено' : h.sets + ' × ' + h.reps}
+                  </div>
+                  ${h.comment && h.status !== 'skipped' ? '<div class="text-xs text-gray-400 mt-0.5">' + h.comment + '</div>' : ''}
                 </div>
-                ${h.comment && h.status !== 'skipped' ? `<div class="text-xs text-gray-400 mt-0.5">${h.comment}</div>` : ''}
-              </div>
-              <div class="text-right">
-                <div class="text-xs font-semibold ${h.status === 'skipped' ? 'text-red-500' : 'text-green-600'}">
-                  ${h.status === 'skipped' ? 'Пропуск' : 'Сделал'}
+                <div class="text-right">
+                  <div class="text-xs font-semibold ${h.status === 'skipped' ? 'text-red-500' : 'text-green-600'}">
+                    ${h.status === 'skipped' ? 'Пропуск' : 'Сделал'}
+                  </div>
+                  <div class="text-xs text-gray-400 mt-0.5">${h.feeling || 'Норм'}</div>
                 </div>
-                <div class="text-xs text-gray-400 mt-0.5">${h.feeling || 'Норм'}</div>
               </div>
-            </div>
-          `).join('')}
+            `;
+          }).join('')}
         </div>
       </div>
     `;
@@ -1494,8 +1501,8 @@ function renderPatientDetailScreen() {
   const isAdmin = state.currentUser.role === 'admin';
   const isDoctor = state.currentUser.role === 'doctor';
   const presc = db.prescriptions[pat.id] || [];
-  const patHistory = db.history.filter(h => h.patientId === pat.id);
-  const patPayments = db.payments.filter(p => p.patientId === pat.id);
+  const patHistory = db.history.filter(function(h) { return h.patientId === pat.id; });
+  const patPayments = db.payments.filter(function(p) { return p.patientId === pat.id; });
   const firstLetter = (pat.name || 'П')[0].toUpperCase();
 
   return `
@@ -1531,7 +1538,7 @@ function renderPatientDetailScreen() {
           <div class="card p-6 text-center text-sm font-semibold text-gray-700">Упражнения не назначены</div>
         ` : `
           <div class="card divide-y divide-gray-100">
-            ${presc.map((item, idx) => {
+            ${presc.map(function(item, idx) {
               const ex = getExerciseById(item.exerciseId);
               return `
                 <div class="p-3.5 flex items-center gap-3">
@@ -1575,15 +1582,17 @@ function renderPatientDetailScreen() {
             <div class="card p-4 text-center text-xs text-gray-400">Оплат нет</div>
           ` : `
             <div class="space-y-2">
-              ${patPayments.map(pay => `
-                <div class="card p-3.5 flex justify-between items-center">
-                  <div>
-                    <div class="font-semibold text-sm">${pay.lessons} занятий</div>
-                    <div class="text-xs text-gray-400">${pay.date}</div>
+              ${patPayments.map(function(pay) {
+                return `
+                  <div class="card p-3.5 flex justify-between items-center">
+                    <div>
+                      <div class="font-semibold text-sm">${pay.lessons} занятий</div>
+                      <div class="text-xs text-gray-400">${pay.date}</div>
+                    </div>
+                    <div class="font-semibold text-sm">${pay.amount ? pay.amount + ' ₽' : ''}</div>
                   </div>
-                  <div class="font-semibold text-sm">${pay.amount ? pay.amount + ' ₽' : ''}</div>
-                </div>
-              `).join('')}
+                `;
+              }).join('')}
             </div>
           `}
         </div>
@@ -1594,7 +1603,7 @@ function renderPatientDetailScreen() {
 
 function renderPatientHistoryScreen() {
   const pat = getPatientById(state.selectedPatientId);
-  const patHistory = db.history.filter(h => h.patientId === state.selectedPatientId);
+  const patHistory = db.history.filter(function(h) { return h.patientId === state.selectedPatientId; });
   return `
     <div class="p-4 pt-5 space-y-4">
       <button onclick="state.subScreen='patientDetail'; render();" class="text-sm brand-purple-text font-medium flex items-center gap-1">
@@ -1605,24 +1614,26 @@ function renderPatientHistoryScreen() {
         <p class="text-xs text-gray-500">${pat ? pat.name : ''}</p>
       </div>
       <div class="space-y-2.5">
-        ${patHistory.map(h => `
-          <div class="card p-4 flex justify-between items-start">
-            <div>
-              <div class="font-bold text-sm">${h.exerciseTitle}</div>
-              <div class="text-xs text-gray-500 mt-0.5">${h.sets} × ${h.reps} · ${h.feeling}</div>
-              ${h.comment ? `<div class="text-xs text-gray-400 italic mt-0.5">«${h.comment}»</div>` : ''}
+        ${patHistory.map(function(h) {
+          return `
+            <div class="card p-4 flex justify-between items-start">
+              <div>
+                <div class="font-bold text-sm">${h.exerciseTitle}</div>
+                <div class="text-xs text-gray-500 mt-0.5">${h.sets} × ${h.reps} · ${h.feeling}</div>
+                ${h.comment ? '<div class="text-xs text-gray-400 italic mt-0.5">«' + h.comment + '»</div>' : ''}
+              </div>
+              <span class="text-green-600 font-bold">✓</span>
             </div>
-            <span class="text-green-600 font-bold">✓</span>
-          </div>
-        `).join('')}
+          `;
+        }).join('')}
       </div>
     </div>
   `;
 }
 
 function renderEditPrescriptionsScreen() {
-  const assignedIds = state.tempPrescriptions.map(p => p.exerciseId);
-  const availableExercises = db.exercises.filter(e => !assignedIds.includes(e.id));
+  const assignedIds = state.tempPrescriptions.map(function(p) { return p.exerciseId; });
+  const availableExercises = db.exercises.filter(function(e) { return !assignedIds.includes(e.id); });
 
   return `
     <div class="p-4 pt-5 space-y-4">
@@ -1635,7 +1646,7 @@ function renderEditPrescriptionsScreen() {
       <div class="text-xs font-semibold text-gray-400 uppercase">НАЗНАЧЕНО (${state.tempPrescriptions.length})</div>
 
       <div class="space-y-3">
-        ${state.tempPrescriptions.map((item, idx) => {
+        ${state.tempPrescriptions.map(function(item, idx) {
           const ex = getExerciseById(item.exerciseId);
           return `
             <div class="card p-4 space-y-3">
@@ -1682,12 +1693,14 @@ function renderEditPrescriptionsScreen() {
           </div>
         ` : `
           <div class="space-y-2">
-            ${availableExercises.map(ex => `
-              <div onclick="addPrescriptionExercise('${ex.id}')" class="card p-3.5 flex justify-between items-center cursor-pointer">
-                <span class="text-sm font-medium">${ex.title}</span>
-                <span class="text-xs brand-purple-text font-bold">+ Добавить</span>
-              </div>
-            `).join('')}
+            ${availableExercises.map(function(ex) {
+              return `
+                <div onclick="addPrescriptionExercise('${ex.id}')" class="card p-3.5 flex justify-between items-center cursor-pointer">
+                  <span class="text-sm font-medium">${ex.title}</span>
+                  <span class="text-xs brand-purple-text font-bold">+ Добавить</span>
+                </div>
+              `;
+            }).join('')}
           </div>
         `}
       </div>
@@ -1761,7 +1774,7 @@ function renderExerciseFormScreen() {
       <div class="card p-4 space-y-3">
         <div class="text-xs font-semibold text-gray-400 uppercase">ФОТОГРАФИЯ (STORAGE)</div>
         <label class="border-2 border-dashed border-gray-300 rounded-xl h-32 flex flex-col items-center justify-center text-gray-400 text-xs cursor-pointer overflow-hidden">
-          ${d.photo ? `<img src="${d.photo}" class="w-full h-full object-cover">` : `<span>🖼 Нажмите для выбора</span>`}
+          ${d.photo ? `<img src="${d.photo}" class="w-full h-full object-cover">` : '<span>🖼 Нажмите для выбора</span>'}
           <input type="file" accept="image/*" class="hidden" onchange="handleFileUpload(this, 'photo')">
         </label>
       </div>
@@ -1851,11 +1864,13 @@ function renderWorkoutSessionScreen() {
         <div>
           <div class="text-xs font-semibold text-gray-400 uppercase mb-1.5">САМОЧУВСТВИЕ</div>
           <div class="grid grid-cols-5 gap-1">
-            ${feelings.map(f => `
-              <button onclick="syncWorkoutInputs(); state.workoutState.feeling='${f}'; render();" class="py-2 rounded-lg text-[11px] font-medium border transition ${ws.feeling === f ? 'border-[#4a156b] bg-purple-50 brand-purple-text font-bold' : 'border-gray-200 text-gray-600 bg-white'}">
-                ${f}
-              </button>
-            `).join('')}
+            ${feelings.map(function(f) {
+              return `
+                <button onclick="syncWorkoutInputs(); state.workoutState.feeling='${f}'; render();" class="py-2 rounded-lg text-[11px] font-medium border transition ${ws.feeling === f ? 'border-[#4a156b] bg-purple-50 brand-purple-text font-bold' : 'border-gray-200 text-gray-600 bg-white'}">
+                  ${f}
+                </button>
+              `;
+            }).join('')}
           </div>
         </div>
 
@@ -1878,31 +1893,35 @@ function renderWorkoutSessionScreen() {
 
 function renderScheduleList() {
   if (!db.slots || db.slots.length === 0) {
-    return `<div class="card p-6 text-center text-xs text-gray-400">Слоты не созданы</div>`;
+    return '<div class="card p-6 text-center text-xs text-gray-400">Слоты не созданы</div>';
   }
   return `
     <div class="space-y-4">
-      ${db.slots.map(day => `
-        <div>
-          <div class="text-xs font-semibold text-gray-400 uppercase mb-2">${day.dayLabel}</div>
-          <div class="card divide-y divide-gray-100">
-            ${day.hours.map(h => `
-              <div class="p-3.5 flex justify-between items-center">
-                <span class="font-semibold text-sm">${h.time}</span>
-                <div class="flex items-center gap-2">
-                  <span class="text-xs text-gray-400">${h.bookedPatientIds.length}/${h.capacity}</span>
-                  <span class="text-[11px] bg-green-50 text-green-600 font-medium px-2 py-0.5 rounded-md">Свободно</span>
-                </div>
-              </div>
-            `).join('')}
+      ${db.slots.map(function(day) {
+        return `
+          <div>
+            <div class="text-xs font-semibold text-gray-400 uppercase mb-2">${day.dayLabel}</div>
+            <div class="card divide-y divide-gray-100">
+              ${day.hours.map(function(h) {
+                return `
+                  <div class="p-3.5 flex justify-between items-center">
+                    <span class="font-semibold text-sm">${h.time}</span>
+                    <div class="flex items-center gap-2">
+                      <span class="text-xs text-gray-400">${h.bookedPatientIds.length}/${h.capacity}</span>
+                      <span class="text-[11px] bg-green-50 text-green-600 font-medium px-2 py-0.5 rounded-md">Свободно</span>
+                    </div>
+                  </div>
+                `;
+              }).join('')}
+            </div>
           </div>
-        </div>
-      `).join('')}
+        `;
+      }).join('')}
     </div>
   `;
 }
 
-function renderProfileScreen(roleSubtitle, showPhone, assignedDoc = null) {
+function renderProfileScreen(roleSubtitle, showPhone, assignedDoc) {
   const u = state.currentUser;
   return `
     <div class="p-4 pt-6 space-y-4">
@@ -1944,7 +1963,7 @@ function renderProfileScreen(roleSubtitle, showPhone, assignedDoc = null) {
 }
 
 function renderBottomNav(role) {
-  let tabs = [];
+  var tabs = [];
   if (role === 'admin') {
     tabs = [
       { id: 'home', label: 'Главная', icon: ICONS.home },
@@ -1972,7 +1991,7 @@ function renderBottomNav(role) {
 
   return `
     <nav class="bottom-nav">
-      ${tabs.map(t => {
+      ${tabs.map(function(t) {
         const active = state.activeTab === t.id && !state.subScreen;
         return `
           <button onclick="state.subScreen=null; state.activeTab='${t.id}'; render();" class="flex flex-col items-center justify-center flex-1 ${active ? 'brand-purple-text font-semibold' : 'text-gray-400'}">
@@ -2079,18 +2098,22 @@ function renderModal() {
             </div>
           ` : `
             <div class="space-y-3 max-h-80 overflow-y-auto">
-              ${db.slots.slice(0, 3).map(day => `
-                <div>
-                  <div class="text-xs font-bold text-gray-400 mb-1.5">${day.dayLabel}</div>
-                  <div class="grid grid-cols-3 gap-2">
-                    ${day.hours.map(h => `
-                      <button onclick="patientBookSlot('${day.dayLabel}', '${h.time}')" class="card py-2.5 text-xs font-semibold hover:border-[#4a156b]">
-                        ${h.time}
-                      </button>
-                    `).join('')}
+              ${db.slots.slice(0, 3).map(function(day) {
+                return `
+                  <div>
+                    <div class="text-xs font-bold text-gray-400 mb-1.5">${day.dayLabel}</div>
+                    <div class="grid grid-cols-3 gap-2">
+                      ${day.hours.map(function(h) {
+                        return `
+                          <button onclick="patientBookSlot('${day.dayLabel}', '${h.time}')" class="card py-2.5 text-xs font-semibold hover:border-[#4a156b]">
+                            ${h.time}
+                          </button>
+                        `;
+                      }).join('')}
+                    </div>
                   </div>
-                </div>
-              `).join('')}
+                `;
+              }).join('')}
             </div>
           `}
         </div>
@@ -2153,10 +2176,10 @@ function renderModal() {
   return '';
 }
 
-// ГАРАНТИРОВАННАЯ ПЕРВИЧНАЯ ОТРИСОВКА
+// Отрисовываем экран немедленно
 render();
 
-// Загрузка данных, если клиент Supabase активен
+// Загружаем данные из облака, если параметры подключения уже сохранены
 if (supabase) {
   fetchCloudData();
   initRealtimeSubscription();
