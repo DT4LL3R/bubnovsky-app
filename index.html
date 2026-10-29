@@ -103,29 +103,54 @@
 </head>
 <body>
 
-<div id="app-container"></div>
+<div id="app-container">
+  <!-- Начальная заглушка на случай медленной загрузки скриптов -->
+  <div class="min-h-screen flex items-center justify-center text-gray-400 text-sm">
+    Загрузка приложения...
+  </div>
+</div>
 
 <script>
 // ==========================================
 // 1. ИНИЦИАЛИЗАЦИЯ ПОДКЛЮЧЕНИЯ К SUPABASE
 // ==========================================
-let SUPABASE_URL = localStorage.getItem('lfk_supabase_url') || 'https://mbipbmjlumovyymxeezr.supabase.co';
-let SUPABASE_ANON_KEY = localStorage.getItem('lfk_supabase_key') || 'sb_publishable_J6-bMxiDV6gofFS2tockHA_fQWpWkni';
+// Если вы хотите сразу зашить ключи в проект, замените пустые кавычки на ваши реальные значения:
+let SUPABASE_URL = localStorage.getItem('lfk_supabase_url') || '';
+let SUPABASE_ANON_KEY = localStorage.getItem('lfk_supabase_key') || '';
 let supabase = null;
 
-if (SUPABASE_URL && SUPABASE_ANON_KEY && window.supabase) {
-  try {
-    supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-  } catch (e) {
-    console.error('Ошибка инициализации Supabase:', e);
+function initSupabaseClient() {
+  if (SUPABASE_URL && SUPABASE_ANON_KEY && window.supabase) {
+    try {
+      supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+      return true;
+    } catch (e) {
+      console.error('Ошибка инициализации Supabase:', e);
+    }
   }
+  return false;
 }
+
+initSupabaseClient();
 
 // Локальный кэш данных приложения
 let db = {
-  users: [],
-  exercises: [],
-  prescriptions: {},
+  users: [
+    { id: '11111111-1111-1111-1111-111111111111', email: 'requital@yahoo.com', role: 'admin', name: 'Дмитрий', phone: '+7 900 000-00-00' },
+    { id: '22222222-2222-2222-2222-222222222222', email: 'doc1@aol.com', role: 'doctor', name: 'Пробкин', phone: '', logged_in: false },
+    { id: '33333333-3333-3333-3333-333333333333', email: 'doc2@aol.com', role: 'doctor', name: 'Гусев', phone: '', logged_in: false },
+    { id: '44444444-4444-4444-4444-444444444444', email: 'pat1@aol.com', role: 'patient', name: 'Соболева', phone: '', doctor_id: '22222222-2222-2222-2222-222222222222', balance: 2 }
+  ],
+  exercises: [
+    { id: 'ex_1', title: 'Подтягивания на турнике', description: 'Турничок', photo: '', video: '' },
+    { id: 'ex_2', title: 'Приседания с гирей', description: 'Техника дыхания и удержания спины', photo: '', video: '' }
+  ],
+  prescriptions: {
+    '44444444-4444-4444-4444-444444444444': [
+      { exerciseId: 'ex_1', sets: 1, reps: 10, note: 'Hhh123' },
+      { exerciseId: 'ex_2', sets: 1, reps: 15, note: '10кг' }
+    ]
+  },
   history: [],
   payments: [],
   slots: [],
@@ -165,10 +190,13 @@ let state = {
 };
 
 // ==========================================
-// 2. СИНХРОНИЗАЦИЯ С ОБЛАКОМ (FETCH И REALTIME)
+// 2. СИНХРОНИЗАЦИЯ С ОБЛАКОМ
 // ==========================================
 async function fetchCloudData() {
-  if (!supabase) return;
+  if (!supabase) {
+    render();
+    return;
+  }
   state.isLoading = true;
   render();
 
@@ -182,8 +210,8 @@ async function fetchCloudData() {
       supabase.from('schedule_slots').select('*').order('day_index', { ascending: true })
     ]);
 
-    if (profilesRes.data) db.users = profilesRes.data;
-    if (exercisesRes.data) {
+    if (profilesRes.data && profilesRes.data.length > 0) db.users = profilesRes.data;
+    if (exercisesRes.data && exercisesRes.data.length > 0) {
       db.exercises = exercisesRes.data.map(e => ({
         id: e.id,
         title: e.title,
@@ -193,8 +221,8 @@ async function fetchCloudData() {
       }));
     }
 
-    db.prescriptions = {};
-    if (prescRes.data) {
+    if (prescRes.data && prescRes.data.length > 0) {
+      db.prescriptions = {};
       prescRes.data.forEach(p => {
         if (!db.prescriptions[p.patient_id]) db.prescriptions[p.patient_id] = [];
         db.prescriptions[p.patient_id].push({
@@ -235,7 +263,6 @@ async function fetchCloudData() {
       }));
     }
 
-    // Группировка слотов расписания по дням
     if (slotsRes.data && slotsRes.data.length > 0) {
       const grouped = {};
       slotsRes.data.forEach(s => {
@@ -252,7 +279,6 @@ async function fetchCloudData() {
       db.slots = Object.values(grouped).sort((a,b) => a.dayIndex - b.dayIndex);
     }
 
-    // Обновляем текущего пользователя, если он уже вошёл в систему
     if (state.currentUser) {
       const updated = db.users.find(u => u.id === state.currentUser.id);
       if (updated) state.currentUser = updated;
@@ -267,12 +293,16 @@ async function fetchCloudData() {
 
 function initRealtimeSubscription() {
   if (!supabase) return;
-  supabase
-    .channel('lfk_realtime_changes')
-    .on('postgres_changes', { event: '*', schema: 'public' }, () => {
-      fetchCloudData();
-    })
-    .subscribe();
+  try {
+    supabase
+      .channel('lfk_realtime_changes')
+      .on('postgres_changes', { event: '*', schema: 'public' }, () => {
+        fetchCloudData();
+      })
+      .subscribe();
+  } catch (e) {
+    console.warn('Realtime недоступен:', e);
+  }
 }
 
 function saveSupabaseConfig() {
@@ -290,7 +320,7 @@ function saveSupabaseConfig() {
   localStorage.setItem('lfk_supabase_key', key);
   SUPABASE_URL = url;
   SUPABASE_ANON_KEY = key;
-  supabase = window.supabase.createClient(url, key);
+  initSupabaseClient();
 
   state.modal = null;
   fetchCloudData();
@@ -364,6 +394,16 @@ async function verifyCodeAndLogin() {
     }
     user = data;
     db.users.push(user);
+  } else if (!user) {
+    user = {
+      id: 'local_' + Date.now(),
+      email,
+      role: 'patient',
+      name: state.authNameInput.trim() || email.split('@')[0],
+      phone: '',
+      balance: 0
+    };
+    db.users.push(user);
   } else if (user && user.role === 'doctor' && supabase) {
     await supabase.from('profiles').update({ logged_in: true }).eq('id', user.id);
     user.logged_in = true;
@@ -385,11 +425,11 @@ function loginAsUser(user) {
 function quickLogin(email) {
   const user = db.users.find(u => u.email.toLowerCase() === email.toLowerCase());
   if (user) loginAsUser(user);
-  else alert('Пользователь не найден в базе данных Supabase');
+  else alert('Пользователь не найден в базе данных');
 }
 
 // ==========================================
-// 5. ДЕЙСТВИЯ АДМИНИСТРАТОРА (ВЫЗОВЫ SUPABASE)
+// 5. ДЕЙСТВИЯ АДМИНИСТРАТОРА
 // ==========================================
 async function adminAddDoctor() {
   const emailEl = document.getElementById('modal-doc-email');
@@ -406,6 +446,15 @@ async function adminAddDoctor() {
     return;
   }
 
+  const docData = {
+    id: 'doc_' + Date.now(),
+    email,
+    role: 'doctor',
+    name: name || email.split('@')[0],
+    phone: '',
+    logged_in: false
+  };
+
   if (supabase) {
     const { data, error } = await supabase.from('profiles').insert([{
       email,
@@ -415,12 +464,11 @@ async function adminAddDoctor() {
       logged_in: false
     }]).select().single();
 
-    if (error) {
-      alert('Ошибка добавления врача в Supabase: ' + error.message);
-      return;
-    }
-    db.users.push(data);
+    if (!error && data) db.users.push(data);
+  } else {
+    db.users.push(docData);
   }
+
   state.modal = null;
   render();
 }
@@ -448,7 +496,7 @@ async function adminAddPayment() {
   const newBalance = (pat.balance || 0) + lessons;
 
   if (supabase) {
-    const { data, error } = await supabase.from('payments').insert([{
+    const { data } = await supabase.from('payments').insert([{
       patient_id: pat.id,
       lessons,
       amount,
@@ -457,9 +505,18 @@ async function adminAddPayment() {
     }]).select().single();
 
     await supabase.from('profiles').update({ balance: newBalance }).eq('id', pat.id);
-
     if (data) db.payments.unshift(data);
+  } else {
+    db.payments.unshift({
+      id: 'pay_' + Date.now(),
+      patientId: pat.id,
+      lessons,
+      amount,
+      note,
+      date: new Date().toLocaleDateString('ru-RU')
+    });
   }
+
   pat.balance = newBalance;
   state.modal = null;
   render();
@@ -498,7 +555,22 @@ async function generateScheduleSlots() {
     await supabase.from('schedule_slots').delete().neq('day_index', -1);
     await supabase.from('schedule_slots').insert(insertPayload);
     await fetchCloudData();
+  } else {
+    const grouped = {};
+    insertPayload.forEach((s, idx) => {
+      if (!grouped[s.day_index]) {
+        grouped[s.day_index] = { dayIndex: s.day_index, dayLabel: s.day_label, hours: [] };
+      }
+      grouped[s.day_index].hours.push({
+        id: 'slot_' + idx,
+        time: s.slot_time,
+        capacity: s.capacity,
+        bookedPatientIds: []
+      });
+    });
+    db.slots = Object.values(grouped);
   }
+
   state.activeTab = 'schedule';
   render();
 }
@@ -576,6 +648,8 @@ async function savePrescriptions() {
       await supabase.from('prescriptions').insert(payload);
     }
     await fetchCloudData();
+  } else {
+    db.prescriptions[patId] = JSON.parse(JSON.stringify(state.tempPrescriptions));
   }
   state.subScreen = 'patientDetail';
   render();
@@ -602,7 +676,6 @@ async function handleFileUpload(inputEl, type) {
   if (descEl) state.exerciseFormDraft.description = descEl.value;
 
   if (!supabase) {
-    // Режим оффлайн fallback (DataURL)
     const reader = new FileReader();
     reader.onload = (e) => {
       if (type === 'photo') state.exerciseFormDraft.photo = e.target.result;
@@ -613,7 +686,6 @@ async function handleFileUpload(inputEl, type) {
     return;
   }
 
-  // Загрузка в Supabase Storage (корзина exercise-media)
   try {
     const ext = file.name.split('.').pop();
     const filePath = `${type}s/${Date.now()}_${Math.random().toString(36).substring(2,7)}.${ext}`;
@@ -656,6 +728,26 @@ async function saveExerciseForm() {
       state.subScreen = null;
     }
     await fetchCloudData();
+  } else {
+    if (state.exerciseFormDraft.id) {
+      const ex = getExerciseById(state.exerciseFormDraft.id);
+      if (ex) {
+        ex.title = title;
+        ex.description = description;
+        ex.photo = state.exerciseFormDraft.photo;
+        ex.video = state.exerciseFormDraft.video;
+      }
+      state.subScreen = 'exerciseDetail';
+    } else {
+      db.exercises.push({
+        id: 'ex_' + Date.now(),
+        title,
+        description,
+        photo: state.exerciseFormDraft.photo,
+        video: state.exerciseFormDraft.video
+      });
+      state.subScreen = null;
+    }
   }
   render();
 }
@@ -664,6 +756,8 @@ async function deleteExercise(exId) {
   if (supabase) {
     await supabase.from('exercises').delete().eq('id', exId);
     await fetchCloudData();
+  } else {
+    db.exercises = db.exercises.filter(e => e.id !== exId);
   }
   state.subScreen = null;
   render();
@@ -727,6 +821,21 @@ async function recordWorkoutStep(status) {
   if (supabase) {
     await supabase.from('workout_history').insert([report]);
     await fetchCloudData();
+  } else {
+    db.history.unshift({
+      id: 'h_' + Date.now(),
+      patientId: patId,
+      exerciseId: currentItem.exerciseId,
+      exerciseTitle: ex ? ex.title : 'Упражнение',
+      date: 'СЕГОДНЯ',
+      dateLabel: 'СЕГОДНЯ',
+      sets: state.workoutState.sets,
+      reps: state.workoutState.reps,
+      weight: state.workoutState.weight,
+      feeling: state.workoutState.feeling,
+      comment: status === 'skipped' ? 'Не выполнено' : state.workoutState.comment,
+      status
+    });
   }
 
   const nextIdx = state.workoutState.index + 1;
@@ -764,6 +873,9 @@ async function patientBookSlot(dayLabel, timeStr) {
       balance: newBalance
     }).eq('id', pat.id);
     await fetchCloudData();
+  } else {
+    pat.booked_slot = bookedStr;
+    pat.balance = newBalance;
   }
   state.modal = null;
   render();
@@ -780,7 +892,7 @@ async function saveProfileChanges() {
   }
   state.currentUser.name = name;
   state.currentUser.phone = phone;
-  alert('Профиль сохранён в Supabase');
+  alert('Профиль сохранён');
   render();
 }
 
@@ -789,6 +901,7 @@ async function saveProfileChanges() {
 // ==========================================
 function render() {
   const container = document.getElementById('app-container');
+  if (!container) return;
 
   if (!state.currentUser) {
     container.innerHTML = renderAuthScreen() + renderModal();
@@ -888,7 +1001,7 @@ function renderAuthScreen() {
       </div>
 
       <div class="card p-4 mt-6 bg-white/90">
-        <div class="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2">Тестовые аккаунты из базы:</div>
+        <div class="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2">Быстрый вход для тестов:</div>
         <div class="grid grid-cols-1 gap-1.5">
           <button onclick="quickLogin('requital@yahoo.com')" class="text-left px-3 py-2 rounded-lg bg-purple-50 text-xs flex justify-between items-center">
             <span><b>Админ</b> (Дмитрий)</span>
@@ -908,7 +1021,6 @@ function renderAuthScreen() {
   `;
 }
 
-// --- Панель Администратора ---
 function renderAdminTabs() {
   const doctors = db.users.filter(u => u.role === 'doctor');
   const patients = db.users.filter(u => u.role === 'patient');
@@ -918,7 +1030,7 @@ function renderAdminTabs() {
       <div class="p-4 pt-6 space-y-5">
         <div>
           <h1 class="text-2xl font-bold">Админ-панель</h1>
-          <p class="text-xs text-gray-500 mt-0.5">Центр Бубновского (Supabase)</p>
+          <p class="text-xs text-gray-500 mt-0.5">Центр Бубновского</p>
         </div>
 
         <div class="grid grid-cols-2 gap-3">
@@ -1060,7 +1172,7 @@ function renderAdminTabs() {
             </div>
           </div>
           <button onclick="generateScheduleSlots()" class="w-full brand-purple text-white font-semibold py-3 rounded-xl mt-2">
-            Создать слоты в Supabase
+            Создать слоты
           </button>
         </div>
 
@@ -1075,7 +1187,6 @@ function renderAdminTabs() {
   return renderProfileScreen('Администратор', false);
 }
 
-// --- Панель Врача ---
 function renderDoctorTabs() {
   const patients = db.users.filter(u => u.role === 'patient');
   const myPatients = patients.filter(p => p.doctor_id === state.currentUser.id);
@@ -1186,7 +1297,6 @@ function renderDoctorTabs() {
   return renderProfileScreen('Врач', true);
 }
 
-// --- Панель Пациента ---
 function renderPatientTabs() {
   const pat = state.currentUser;
   const doc = getDoctorById(pat.doctor_id);
@@ -1329,7 +1439,7 @@ function renderPatientTabs() {
                 <div class="font-bold text-sm">${pat.booked_slot}</div>
                 <div class="text-xs text-green-600 mt-0.5">Запись подтверждена</div>
               </div>
-              <button onclick="if(supabase){supabase.from('profiles').update({booked_slot: null, balance: (pat.balance||0)+1}).eq('id', '${pat.id}').then(()=>fetchCloudData());}" class="text-xs text-red-500 font-medium">
+              <button onclick="if(supabase){supabase.from('profiles').update({booked_slot: null, balance: (pat.balance||0)+1}).eq('id', '${pat.id}').then(()=>fetchCloudData());} else {pat.booked_slot=null; pat.balance=(pat.balance||0)+1; render();}" class="text-xs text-red-500 font-medium">
                 Отменить
               </button>
             </div>
@@ -1378,7 +1488,6 @@ function renderPatientTabs() {
   return renderProfileScreen('ЛИЧНЫЕ ДАННЫЕ', true, doc);
 }
 
-// --- Вложенные экраны деталей ---
 function renderPatientDetailScreen() {
   const pat = getPatientById(state.selectedPatientId);
   if (!pat) return '';
@@ -1562,7 +1671,7 @@ function renderEditPrescriptionsScreen() {
       </div>
 
       <button onclick="savePrescriptions()" class="w-full brand-purple text-white font-semibold py-3.5 rounded-xl">
-        Сохранить назначения в Supabase
+        Сохранить назначения
       </button>
 
       <div>
@@ -1815,7 +1924,7 @@ function renderProfileScreen(roleSubtitle, showPhone, assignedDoc = null) {
           </div>
         ` : ''}
         <button onclick="saveProfileChanges()" class="w-full brand-purple text-white font-semibold py-3 rounded-xl">
-          Сохранить в Supabase
+          Сохранить
         </button>
       </div>
 
@@ -1900,9 +2009,6 @@ function renderModal() {
               Сохранить и подключиться
             </button>
           </div>
-          <p class="text-[11px] text-gray-400 leading-relaxed px-1">
-            Параметры берутся в панели Supabase: <b>Settings → API</b>. Ключи сохраняются локально в вашем браузере.
-          </p>
         </div>
       </div>
     `;
@@ -1924,7 +2030,7 @@ function renderModal() {
               <input id="modal-doc-name" type="text" placeholder="Иванов И.И." class="input-field">
             </div>
             <button onclick="adminAddDoctor()" class="w-full brand-purple text-white font-semibold py-3.5 rounded-xl">
-              Добавить в базу
+              Добавить
             </button>
           </div>
         </div>
@@ -1969,7 +2075,7 @@ function renderModal() {
           <h2 class="text-xl font-bold">Выберите время</h2>
           ${!hasSlots ? `
             <div class="card p-6 text-center text-xs text-gray-500">
-              Администратор ещё не сформировал слоты в расписании.
+              Слоты в расписании ещё не созданы.
             </div>
           ` : `
             <div class="space-y-3 max-h-80 overflow-y-auto">
@@ -2035,7 +2141,7 @@ function renderModal() {
       <div class="modal-backdrop items-center">
         <div class="dialog-box space-y-3">
           <div class="font-bold text-base">Тренировка завершена</div>
-          <p class="text-xs text-gray-500">Все упражнения записаны в Supabase</p>
+          <p class="text-xs text-gray-500">Все упражнения записаны</p>
           <button onclick="state.modal=null; state.subScreen=null; state.activeTab='history'; render();" class="w-full py-2.5 rounded-xl bg-gray-200 font-semibold text-sm mt-2">
             ОК
           </button>
@@ -2047,12 +2153,13 @@ function renderModal() {
   return '';
 }
 
-// Первоначальная загрузка
+// ГАРАНТИРОВАННАЯ ПЕРВИЧНАЯ ОТРИСОВКА
+render();
+
+// Загрузка данных, если клиент Supabase активен
 if (supabase) {
   fetchCloudData();
   initRealtimeSubscription();
-} else {
-  render();
 }
 </script>
 </body>
